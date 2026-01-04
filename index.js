@@ -17,14 +17,27 @@ bot.start(async (ctx) => {
         "– Champignons , DMT , Ketamine , Rachacha , LSD , 2cb 🍄 \n\n" +
         "📦 Livraison rapide\n" +
         "💬 Support disponible",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "📱 Mini-App", web_app: { url: WEBAPP_URL } }],
-          [{ text: "🍄 Catalogue", web_app: { url: WEBAPP_URL } }],
-          [{ text: "💬 Contact", url: WHATSAPP_URL }]
-        ]
-      }
-    }
+reply_markup: {
+  inline_keyboard: [
+    [
+      { text: "🌐 Site officiel", url: "https://68d7d0bf71f65.site123.me/" }
+    ],
+    [
+      { text: "🏷️ Tuto fabrication étiquette", url: "https://68d7d0bf71f65.site123.me/#section-68d7fb68e94b7" }
+    ],
+    [
+      { text: "🥔 Potatoes", url: "https://dympt.org/joinchat/sAKC0NuynA1oWfPLQhnw4Q" },
+      { text: "🔐 Signal", url: "https://signal.me/" }
+    ],
+    [
+      { text: "📢 Telegram", url: "https://t.me/+u90WfR2JcaQ3Y2Zk" }
+    ],
+    [
+      { text: "💬 Contact Telegram", url: "@urbfungi" }
+    ]
+  ]
+}
+
   );
 });
 
