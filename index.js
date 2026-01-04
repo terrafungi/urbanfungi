@@ -14,9 +14,7 @@ bot.start(async (ctx) => {
       caption:
         "🍄 UrbanFungi — Menu\n\n" +
         "Ouvrez le catalogue directement dans Telegram 🍄\n\n" +
-        "– Kits de culture 🧪\n" +
-        "– Champignons gourmets 🍄\n" +
-        "– Accessoires 🌱\n\n" +
+        "– Champignons , DMT , Ketamine , Rachacha , LSD , 2cb 🍄\n" +
         "📦 Livraison rapide\n" +
         "💬 Support disponible",
       reply_markup: {
