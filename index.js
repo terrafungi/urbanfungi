@@ -11,7 +11,7 @@ bot.start(async (ctx) => {
   const caption =
     "🍄 UrbanFungi — Menu\n\n" +
     "Ouvrez le catalogue directement dans Telegram 🍄\n\n" +
-     "MOTS DE PASSE POUR LE SITE : Urban / \n" +
+     "MOTS DE PASSE POUR LE SITE : Urban \n\n" +
     "📦 Livraison rapide\n" +
     "💬 Support disponible";
 
