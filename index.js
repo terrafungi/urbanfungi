@@ -23,7 +23,7 @@ bot.start(async (ctx) => {
       [
         {
           text: "🏷️ Tuto fabrication étiquette",
-          url: "https://68d7d0bf71f65.site123.me/#section-68d7fb68e94b7"
+          url: "https://telegra.ph/Tuto-pour-%C3%A9tiquette-denvoie-01-05"
         }
       ],
       [
