@@ -14,7 +14,7 @@ const bot = new Telegraf(BOT_TOKEN);
 // 🔹 START
 bot.start(async (ctx) => {
   await ctx.reply(
-    "🍄 UrbanFungi — Boutique\n\nClique ci-dessous pour ouvrir la boutique :",
+    "🍄 UrbanFungi — Boutique\n\nClique ici :",
     Markup.inlineKeyboard([
       Markup.button.webApp(
         "🛒 Ouvrir la boutique",
