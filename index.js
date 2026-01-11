@@ -92,18 +92,15 @@ bot.catch((err) => console.error("❌ BOT ERROR:", err));
  */
 bot.start(async (ctx) => {
   await ctx.reply(
-    "👋 Bienvenue dans la boutique UrbanFungi 🍄\n\nClique ci-dessous pour ouvrir la boutique :",
-    Markup.keyboard([
+    "🍄 UrbanFungi — Boutique\n\nClique pour ouvrir la boutique :",
+    Markup.inlineKeyboard([
       Markup.button.webApp(
         "🛒 Ouvrir la boutique",
         "https://urbanfungi-miniapp.onrender.com"
       )
     ])
-      .resize()
-      .oneTime()
   );
 });
-
 
   // optionnel : aide rapide
   await ctx.reply(
