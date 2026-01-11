@@ -28,31 +28,8 @@ bot.command("id", async (ctx) => {
 
 // Test : simule une commande envoyée à l’admin
 bot.command("testorder", async (ctx) => {
-  console.log("🧪 /testorder reçu de", ctx.from?.id, ctx.from?.username);
-
-  if (!process.env.ADMIN_CHAT_ID) {
-    await ctx.reply("❌ ADMIN_CHAT_ID manquant dans Render (Environment).");
-    return;
-  }
-
-  const adminIdRaw = process.env.ADMIN_CHAT_ID;
-  const adminChatId = Number(adminIdRaw);
-
-  if (!Number.isFinite(adminChatId)) {
-    await ctx.reply(`❌ ADMIN_CHAT_ID invalide: "${adminIdRaw}"`);
-    return;
-  }
-
-  const fakeOrder = {
-    id: "order_test_1",
-    orderCode: "CMD-2048",
-    telegramUserId: ctx.from.id,
-    telegramUsername: ctx.from.username,
-    items: [
-      { name: "Produit Démo", variantLabel: "500 g", qty: 1, unitPriceEur: 29.9 },
-    ],
-    totalEur: 29.9,
-  };
+  await sendTestOrder(ctx);
+});
 
   try {
     async function sendTestOrder(ctx) {
