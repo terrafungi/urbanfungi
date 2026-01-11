@@ -1,114 +1,109 @@
-// index.js (CommonJS)
+// index.js (bot avec panier + paiement BTC)
 require("dotenv").config();
 const { Telegraf, Markup } = require("telegraf");
+const produits = require("./products.json");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0");
-const WEBAPP_URL = process.env.WEBAPP_URL || "https://example.com";
-const BTC_ADDRESS = process.env.BTC_ADDRESS || "bc1...";
+const BTC_ADDRESS = process.env.BTC_ADDRESS || "bc1q7ttd985n9nlky9gqe9vxwqq33u007ssvq0dnql";
 
-if (!BOT_TOKEN) {
-  console.error("❌ BOT_TOKEN manquant (Render > Environment)");
-  process.exit(1);
-}
-if (!ADMIN_CHAT_ID) {
-  console.error("❌ ADMIN_CHAT_ID manquant ou invalide (Render > Environment)");
+if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
+  console.error("❌ BOT_TOKEN ou ADMIN_CHAT_ID manquant");
   process.exit(1);
 }
 
 const bot = new Telegraf(BOT_TOKEN);
+const paniers = new Map();
 
-bot.catch((err) => console.error("❌ BOT ERROR:", err));
+function getPanierText(panier) {
+  if (!panier || panier.length === 0) return "🛒 Ton panier est vide.";
+  const total = panier.reduce((sum, p) => sum + p.prix, 0);
+  return (
+    "🧺 Ton panier :\n" +
+    panier.map(p => `- ${p.nom} — ${p.prix} €`).join("\n") +
+    `\n\n💶 Total : ${total.toFixed(2)} €`
+  );
+}
 
 bot.start(async (ctx) => {
-  await ctx.reply(
-    "🍄 UrbanFungi — Boutique\n\nCliquez pour ouvrir la mini-boutique :",
-    Markup.inlineKeyboard([
-      Markup.button.webApp("🛒 Ouvrir la boutique", WEBAPP_URL),
-    ])
-  );
+  await ctx.reply("👋 Bienvenue dans la boutique UrbanFungi !\n\nTape /catalogue pour voir les produits.");
 });
 
-bot.command("id", async (ctx) => {
-  await ctx.reply(`✅ Ton chat_id = ${ctx.chat.id}`);
+bot.command("catalogue", async (ctx) => {
+  for (const produit of produits) {
+    await ctx.reply(
+      `🛍️ ${produit.nom}\n💶 ${produit.prix} €`,
+      Markup.inlineKeyboard([
+        Markup.button.callback("➕ Ajouter au panier", `add:${produit.nom}`),
+      ])
+    );
+  }
 });
 
-async function sendTestOrder(ctx) {
-  const fakeOrder = {
-    id: "order_test_1",
-    orderCode: "CMD-2048",
-    telegramUserId: ctx.from.id,
-    telegramUsername: ctx.from.username,
-    items: [
-      { name: "Produit Démo", variantLabel: "500 g", qty: 1, unitPriceEur: 29.9 },
-    ],
-    totalEur: 29.9,
-  };
+bot.command("panier", async (ctx) => {
+  const panier = paniers.get(ctx.from.id) || [];
+  const texte = getPanierText(panier);
+  const total = panier.reduce((sum, p) => sum + p.prix, 0);
+  if (panier.length === 0) {
+    await ctx.reply(texte);
+  } else {
+    await ctx.reply(
+      texte,
+      Markup.inlineKeyboard([
+        [Markup.button.callback("✅ J’ai payé", "valider")],
+      ])
+    );
+  }
+});
 
+bot.action(/^add:(.+)/, async (ctx) => {
+  const nom = ctx.match[1];
+  const produit = produits.find(p => p.nom === nom);
+  if (!produit) return ctx.answerCbQuery("Produit introuvable");
+  const panier = paniers.get(ctx.from.id) || [];
+  panier.push(produit);
+  paniers.set(ctx.from.id, panier);
+  await ctx.answerCbQuery("Ajouté au panier ✅");
+});
+
+bot.action("valider", async (ctx) => {
+  const panier = paniers.get(ctx.from.id) || [];
+  if (panier.length === 0) return ctx.answerCbQuery("Panier vide");
+  const total = panier.reduce((sum, p) => sum + p.prix, 0);
+
+  const orderId = `CMD-${Math.floor(1000 + Math.random() * 9000)}`;
   const text =
-    `🧾 NOUVELLE COMMANDE ${fakeOrder.orderCode}\n` +
-    `Client: @${fakeOrder.telegramUsername || "inconnu"} (id ${fakeOrder.telegramUserId})\n\n` +
+    `📦 Nouvelle commande ${orderId}\n` +
+    `Client: @${ctx.from.username || "inconnu"} (${ctx.from.id})\n` +
     `Produits:\n` +
-    fakeOrder.items
-      .map(
-        (i) =>
-          `- ${i.name} (${i.variantLabel}) x${i.qty} — ${i.unitPriceEur.toFixed(2)} €`
-      )
-      .join("\n") +
-    `\n\nTotal: ${fakeOrder.totalEur.toFixed(2)} €\n` +
-    `Paiement: BTC (manuel)\n` +
-    `Adresse BTC: ${BTC_ADDRESS}\n` +
-    `Statut: EN ATTENTE`;
+    panier.map(p => `- ${p.nom} — ${p.prix} €`).join("\n") +
+    `\n\n💶 Total : ${total.toFixed(2)} €\n` +
+    `💰 Paiement BTC (manuel)\nAdresse : ${BTC_ADDRESS}`;
 
   await bot.telegram.sendMessage(
     ADMIN_CHAT_ID,
     text,
     Markup.inlineKeyboard([
-      [Markup.button.callback("✅ Paiement reçu", `paid:${fakeOrder.id}`)],
-      [Markup.button.callback("❌ Annuler", `cancel:${fakeOrder.id}`)],
-      [Markup.button.callback("📦 Marquer expédiée", `shipped:${fakeOrder.id}`)],
+      [Markup.button.callback("✅ Paiement reçu", `ok:${orderId}`)],
+      [Markup.button.callback("❌ Annuler", `cancel:${orderId}`)],
+      [Markup.button.callback("📤 Expédié", `ship:${orderId}`)]
     ])
   );
-}
 
-bot.command("testorder", async (ctx) => {
-  try {
-    await sendTestOrder(ctx);
-    await ctx.reply("✅ Commande test envoyée à l’admin (MP).");
-  } catch (err) {
-    console.error("❌ sendTestOrder failed:", err);
-    await ctx.reply("❌ Erreur: impossible d’envoyer la commande test (voir logs Render).");
-  }
+  await ctx.reply(`✅ Commande enregistrée. Envoie ${total.toFixed(2)} € en BTC à :\n${BTC_ADDRESS}`);
+  paniers.set(ctx.from.id, []);
 });
 
 bot.on("callback_query", async (ctx) => {
-  const data = ctx.callbackQuery?.data || "";
-  const [action, orderId] = data.split(":");
-
-  if (action === "paid") {
-    await ctx.answerCbQuery("Paiement confirmé ✅");
-    await ctx.reply(`✅ Paiement reçu pour ${orderId}`);
-  } else if (action === "cancel") {
-    await ctx.answerCbQuery("Commande annulée ❌");
-    await ctx.reply(`❌ Commande annulée : ${orderId}`);
-  } else if (action === "shipped") {
-    await ctx.answerCbQuery("Commande expédiée 📦");
-    await ctx.reply(`📦 Commande expédiée : ${orderId}`);
-  } else {
-    await ctx.answerCbQuery("Action inconnue");
-  }
+  const data = ctx.callbackQuery.data;
+  const [action, id] = data.split(":");
+  if (action === "ok") await ctx.reply(`✅ Paiement confirmé pour ${id}`);
+  else if (action === "cancel") await ctx.reply(`❌ Commande ${id} annulée.`);
+  else if (action === "ship") await ctx.reply(`📤 Commande ${id} expédiée.`);
+  await ctx.answerCbQuery();
 });
 
-(async () => {
-  try {
-    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    await bot.launch({ dropPendingUpdates: true });
-    console.log("✅ Bot UrbanFungi lancé (polling actif) !");
-  } catch (err) {
-    console.error("❌ Échec lancement bot:", err);
-    process.exit(1);
-  }
-})();
+bot.launch();
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
