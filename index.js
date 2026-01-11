@@ -1,91 +1,83 @@
-import { Telegraf } from "telegraf";
-import http from "http";
+// index.js
+require("dotenv").config();
+const { Telegraf, Markup } = require("telegraf");
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-const WEBAPP_URL = process.env.WEBAPP_URL; // pas utilisé ici mais ok
-const BANNER_URL = process.env.BANNER_URL;
-const WHATSAPP_URL = process.env.WHATSAPP_URL || "https://example.com";
+const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID);
+const WEBAPP_URL = process.env.WEBAPP_URL || "https://example.com";
+const BTC_ADDRESS = process.env.BTC_ADDRESS || "bc1...";
 
 bot.start(async (ctx) => {
-  const caption =
-    "🍄 UrbanFungi — Menu\n\n" +
-    "Ouvrez le catalogue directement dans Telegram 🍄\n\n" +
-     "MOTS DE PASSE POUR LE SITE : Urban \n\n" +
-    "📦 Livraison rapide\n" +
-    "💬 Support disponible";
-
-  const reply_markup = {
-    inline_keyboard: [
-      [
-        { text: "🌐 Site officiel", url: "https://68d7d0bf71f65.site123.me/" }
-      ],
-      [
-        {
-          text: "🏷️ Tuto fabrication étiquette",
-          url: "https://telegra.ph/Tuto-pour-%C3%A9tiquette-denvoie-01-05"
-        }
-      ],
-      [
-        { text: "🥔 Potatoes", url: "https://dympt.org/joinchat/sAKC0NuynA1oWfPLQhnw4Q" },
-        { text: "🔐 Signal", url: "https://signal.me/" }
-      ],
-      [
-        { text: "📢 Telegram", url: "https://t.me/+u90WfR2JcaQ3Y2Zk" }
-      ],
-      [
-        // IMPORTANT: url doit être une vraie URL
-        { text: "💬 Contact Telegram", url: "https://t.me/urbfungi" }
-      ]
-    ]
-  };
-
-  // Si pas de bannière valide, on envoie du texte simple
-  if (!BANNER_URL || !BANNER_URL.startsWith("http")) {
-    await ctx.reply(caption, { reply_markup });
-    return;
-  }
-
-  await ctx.replyWithPhoto(
-    { url: BANNER_URL },
-    { caption, reply_markup }
+  await ctx.reply(
+    "🍄 UrbanFungi — Boutique\n\nCliquez pour ouvrir la mini-boutique :",
+    Markup.inlineKeyboard([
+      Markup.button.webApp("🛒 Ouvrir la boutique", WEBAPP_URL),
+    ])
   );
 });
 
-// --- mini serveur HTTP (Render) ---
-const PORT = process.env.PORT || 10000;
-const WEBHOOK_PATH = "/telegram-webhook";
+// Commande pour vérifier l’ID
+bot.command("id", async (ctx) => {
+  await ctx.reply(`✅ Ton chat_id = ${ctx.chat.id}`);
+});
 
-const server = http.createServer((req, res) => {
-  if (req.method === "POST" && req.url === WEBHOOK_PATH) {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", async () => {
-      try {
-        await bot.handleUpdate(JSON.parse(data));
-      } catch (e) {
-        console.error("handleUpdate error:", e);
-      }
-      res.writeHead(200);
-      res.end("OK");
-    });
+// Test : simule une commande envoyée à l’admin
+bot.command("testorder", async (ctx) => {
+  const fakeOrder = {
+    id: "order_test_1",
+    orderCode: "CMD-2048",
+    telegramUserId: ctx.from.id,
+    telegramUsername: ctx.from.username,
+    items: [
+      { name: "Produit Démo", variantLabel: "500 g", qty: 1, unitPriceEur: 29.9 },
+    ],
+    totalEur: 29.9,
+  };
+
+  await bot.telegram.sendMessage(
+    ADMIN_CHAT_ID,
+    `🧾 NOUVELLE COMMANDE ${fakeOrder.orderCode}\n` +
+      `Client: @${fakeOrder.telegramUsername || "inconnu"} (id ${fakeOrder.telegramUserId})\n\n` +
+      `Produits:\n` +
+      fakeOrder.items
+        .map(
+          (i) =>
+            `- ${i.name} (${i.variantLabel}) x${i.qty} — ${i.unitPriceEur.toFixed(2)} €`
+        )
+        .join("\n") +
+      `\n\nTotal: ${fakeOrder.totalEur.toFixed(2)} €\n` +
+      `Paiement: BTC (manuel)\n` +
+      `Adresse BTC: ${BTC_ADDRESS}\n` +
+      `Statut: EN ATTENTE`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("✅ Paiement reçu", `paid:${fakeOrder.id}`)],
+      [Markup.button.callback("❌ Annuler", `cancel:${fakeOrder.id}`)],
+      [Markup.button.callback("📦 Marquer expédiée", `shipped:${fakeOrder.id}`)],
+    ])
+  );
+
+  await ctx.reply("✅ Commande test envoyée à l’admin (MP).");
+});
+
+// Boutons admin
+bot.on("callback_query", async (ctx) => {
+  const data = ctx.callbackQuery.data || "";
+  const [action, orderId] = data.split(":");
+
+  if (action === "paid") {
+    await ctx.answerCbQuery("Paiement confirmé ✅");
+    await ctx.reply(`✅ Paiement reçu pour ${orderId}`);
+  } else if (action === "cancel") {
+    await ctx.answerCbQuery("Commande annulée ❌");
+    await ctx.reply(`❌ Commande annulée : ${orderId}`);
+  } else if (action === "shipped") {
+    await ctx.answerCbQuery("Commande expédiée 📦");
+    await ctx.reply(`📦 Commande expédiée : ${orderId}`);
   } else {
-    res.writeHead(200);
-    res.end("UrbanFungi bot is running ✅");
+    await ctx.answerCbQuery("Action inconnue");
   }
 });
 
-server.listen(PORT, async () => {
-  console.log(`HTTP server listening on ${PORT}`);
-
-  // Render fournit souvent RENDER_EXTERNAL_URL
-  const base = process.env.RENDER_EXTERNAL_URL || "";
-  if (!base) {
-    console.log("No RENDER_EXTERNAL_URL found ❌");
-    return;
-  }
-
-  const webhookUrl = `${base}${WEBHOOK_PATH}`;
-  await bot.telegram.setWebhook(webhookUrl);
-  console.log("Webhook set ✅", webhookUrl);
-});
+bot.launch();
+console.log("✅ Bot UrbanFungi lancé !");
