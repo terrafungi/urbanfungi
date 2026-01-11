@@ -28,6 +28,21 @@ bot.command("id", async (ctx) => {
 
 // Test : simule une commande envoyée à l’admin
 bot.command("testorder", async (ctx) => {
+  console.log("🧪 /testorder reçu de", ctx.from?.id, ctx.from?.username);
+
+  if (!process.env.ADMIN_CHAT_ID) {
+    await ctx.reply("❌ ADMIN_CHAT_ID manquant dans Render (Environment).");
+    return;
+  }
+
+  const adminIdRaw = process.env.ADMIN_CHAT_ID;
+  const adminChatId = Number(adminIdRaw);
+
+  if (!Number.isFinite(adminChatId)) {
+    await ctx.reply(`❌ ADMIN_CHAT_ID invalide: "${adminIdRaw}"`);
+    return;
+  }
+
   const fakeOrder = {
     id: "order_test_1",
     orderCode: "CMD-2048",
@@ -38,6 +53,32 @@ bot.command("testorder", async (ctx) => {
     ],
     totalEur: 29.9,
   };
+
+  try {
+    await bot.telegram.sendMessage(
+      adminChatId,
+      `🧾 NOUVELLE COMMANDE ${fakeOrder.orderCode}\n` +
+        `Client: @${fakeOrder.telegramUsername || "inconnu"} (id ${fakeOrder.telegramUserId})\n\n` +
+        `Produits:\n` +
+        fakeOrder.items
+          .map(
+            (i) =>
+              `- ${i.name} (${i.variantLabel}) x${i.qty} — ${i.unitPriceEur.toFixed(2)} €`
+          )
+          .join("\n") +
+        `\n\nTotal: ${fakeOrder.totalEur.toFixed(2)} €\n` +
+        `Paiement: BTC (manuel)\n` +
+        `Adresse BTC: ${process.env.BTC_ADDRESS || "NON DEFINIE"}\n` +
+        `Statut: EN ATTENTE`
+    );
+
+    await ctx.reply("✅ Commande test envoyée à l’admin (MP).");
+  } catch (e) {
+    console.error("❌ sendMessage admin failed:", e);
+    await ctx.reply("❌ Échec envoi MP admin. Regardez les logs Render (erreur).");
+  }
+});
+
 
   await bot.telegram.sendMessage(
     ADMIN_CHAT_ID,
