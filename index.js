@@ -18,10 +18,8 @@ if (!ADMIN_CHAT_ID) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// Log erreurs Telegraf
 bot.catch((err) => console.error("❌ BOT ERROR:", err));
 
-// /start
 bot.start(async (ctx) => {
   await ctx.reply(
     "🍄 UrbanFungi — Boutique\n\nCliquez pour ouvrir la mini-boutique :",
@@ -31,12 +29,10 @@ bot.start(async (ctx) => {
   );
 });
 
-// /id pour vérifier
 bot.command("id", async (ctx) => {
   await ctx.reply(`✅ Ton chat_id = ${ctx.chat.id}`);
 });
 
-// Fonction: envoyer une commande test à l'admin
 async function sendTestOrder(ctx) {
   const fakeOrder = {
     id: "order_test_1",
@@ -64,7 +60,6 @@ async function sendTestOrder(ctx) {
     `Adresse BTC: ${BTC_ADDRESS}\n` +
     `Statut: EN ATTENTE`;
 
-  // Envoi MP admin + boutons
   await bot.telegram.sendMessage(
     ADMIN_CHAT_ID,
     text,
@@ -76,9 +71,7 @@ async function sendTestOrder(ctx) {
   );
 }
 
-// /testorder
 bot.command("testorder", async (ctx) => {
-  console.log("🧪 /testorder reçu de", ctx.from?.id, ctx.from?.username);
   try {
     await sendTestOrder(ctx);
     await ctx.reply("✅ Commande test envoyée à l’admin (MP).");
@@ -88,7 +81,6 @@ bot.command("testorder", async (ctx) => {
   }
 });
 
-// Boutons admin
 bot.on("callback_query", async (ctx) => {
   const data = ctx.callbackQuery?.data || "";
   const [action, orderId] = data.split(":");
@@ -107,7 +99,6 @@ bot.on("callback_query", async (ctx) => {
   }
 });
 
-// Lancement propre (supprime un webhook éventuel)
 (async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
