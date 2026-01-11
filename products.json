@@ -1,1 +1,29 @@
+// products.json (liste des 25 produits)
+module.exports = [
+  { nom: "Microdose Pack", prix: 29 },
+  { nom: "Focus Énergie", prix: 35 },
+  { nom: "Calme & Sommeil", prix: 32 },
+  { nom: "Exploration Intérieure", prix: 55 },
+  { nom: "Mini Trip", prix: 49 },
+  { nom: "Deep Session", prix: 65 },
+  { nom: "Relax & Chill", prix: 38 },
+  { nom: "Mix Découverte", prix: 42 },
+  { nom: "Starter Pack", prix: 25 },
+  { nom: "Voyage Créatif", prix: 59 },
+  { nom: "Connexion Nature", prix: 37 },
+  { nom: "Booster Sensoriel", prix: 40 },
+  { nom: "Mood Lift", prix: 30 },
+  { nom: "Lumière Intérieure", prix: 62 },
+  { nom: "Soft Explorer", prix: 27 },
+  { nom: "Dream Pack", prix: 33 },
+  { nom: "Focus & Flow", prix: 36 },
+  { nom: "Night Vision", prix: 48 },
+  { nom: "Creative Box", prix: 45 },
+  { nom: "Silence Profond", prix: 41 },
+  { nom: "Clarity Mix", prix: 39 },
+  { nom: "Pulse Pack", prix: 34 },
+  { nom: "Open Mind", prix: 50 },
+  { nom: "Euphoria Mini", prix: 28 },
+  { nom: "Mystic Pack", prix: 58 }
+];
 
