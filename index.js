@@ -3,6 +3,10 @@ require("dotenv").config();
 const { Telegraf, Markup } = require("telegraf");
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+bot.catch((err, ctx) => {
+  console.error("❌ BOT ERROR:", err);
+});
+
 
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID);
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://example.com";
