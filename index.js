@@ -55,8 +55,21 @@ bot.command("testorder", async (ctx) => {
   };
 
   try {
+    async function sendTestOrder(ctx) {
+  const fakeOrder = {
+    id: "order_test_1",
+    orderCode: "CMD-2048",
+    telegramUserId: ctx.from.id,
+    telegramUsername: ctx.from.username,
+    items: [
+      { name: "Produit Démo", variantLabel: "500 g", qty: 1, unitPriceEur: 29.9 },
+    ],
+    totalEur: 29.9,
+  };
+
+  try {
     await bot.telegram.sendMessage(
-      adminChatId,
+      ADMIN_CHAT_ID,
       `🧾 NOUVELLE COMMANDE ${fakeOrder.orderCode}\n` +
         `Client: @${fakeOrder.telegramUsername || "inconnu"} (id ${fakeOrder.telegramUserId})\n\n` +
         `Produits:\n` +
@@ -71,6 +84,14 @@ bot.command("testorder", async (ctx) => {
         `Adresse BTC: ${process.env.BTC_ADDRESS || "NON DEFINIE"}\n` +
         `Statut: EN ATTENTE`
     );
+
+    await ctx.reply("✅ Commande test envoyée à l’admin (MP).");
+  } catch (err) {
+    console.error("❌ ERREUR envoi commande test :", err);
+    await ctx.reply("❌ Erreur lors de l’envoi de la commande test.");
+  }
+}
+
 
     await ctx.reply("✅ Commande test envoyée à l’admin (MP).");
   } catch (e) {
