@@ -1,156 +1,205 @@
+// urbanfungi-bot/index.js
 require("dotenv").config();
+
 const { Telegraf, Markup } = require("telegraf");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || 0);
-const API_URL = (process.env.API_URL || "").replace(/\/+$/, ""); // ex: https://urbanfungi-api.onrender.com
+const API_URL = (process.env.API_URL || "").replace(/\/+$/, "");
+const MINIAPP_URL = process.env.MINIAPP_URL || "https://urbanfungi-miniapp.onrender.com";
 
 if (!BOT_TOKEN || !ADMIN_CHAT_ID || !API_URL) {
-  console.error("❌ BOT_TOKEN, ADMIN_CHAT_ID ou API_URL manquant");
+  console.error("❌ ENV manquantes : BOT_TOKEN / ADMIN_CHAT_ID / API_URL");
   process.exit(1);
 }
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// Stocke quel user doit envoyer une étiquette pour quelle commande
+// (⚠️ mémoire volatile, mais suffisant pour MVP)
+const awaitingLabel = new Map(); // userId -> orderCode
+
 function isAdmin(ctx) {
-  return ctx?.from?.id === ADMIN_CHAT_ID;
+  return Number(ctx.from?.id) === Number(ADMIN_CHAT_ID);
 }
 
-async function callApi(path, body) {
+async function apiPost(path, body) {
   const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
+  return { ok: res.ok, status: res.status, data };
 }
 
-// ✅ Commande boutique
+// ---- Commandes
+bot.command("ping", async (ctx) => {
+  await ctx.reply("✅ Bot UrbanFungi opérationnel");
+});
+
 bot.command("shop", async (ctx) => {
   await ctx.reply(
-    "🛒 Ouvrir la boutique (Mini App) :",
-    Markup.inlineKeyboard([
-      Markup.button.webApp("✅ Ouvrir la boutique", "https://urbanfungi-miniapp.onrender.com"),
-    ])
+    "🛒 Ouvrir la boutique (mode Mini App) :",
+    Markup.inlineKeyboard([Markup.button.webApp("✅ Ouvrir la boutique", MINIAPP_URL)])
   );
 });
 
-// ✅ Ping
-bot.command("ping", (ctx) => ctx.reply("✅ Bot UrbanFungi opérationnel"));
-
-// ✅ Secours si boutons invisibles : /paye CMD-1234
-bot.command("paye", async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const parts = ctx.message.text.split(" ");
-  const orderCode = parts[1];
-  if (!orderCode) return ctx.reply("Usage: /paye CMD-1234");
-
-  try {
-    await callApi("/api/admin-status", { orderCode, status: "PAYE" });
-    await ctx.reply(`✅ Paiement confirmé pour ${orderCode}`);
-  } catch (e) {
-    await ctx.reply(`❌ Erreur: ${e.message}`);
-  }
-});
-
-bot.command("annule", async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const orderCode = ctx.message.text.split(" ")[1];
-  if (!orderCode) return ctx.reply("Usage: /annule CMD-1234");
-
-  try {
-    await callApi("/api/admin-status", { orderCode, status: "ANNULE" });
-    await ctx.reply(`❌ Commande annulée: ${orderCode}`);
-  } catch (e) {
-    await ctx.reply(`❌ Erreur: ${e.message}`);
-  }
-});
-
-bot.command("expedie", async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const orderCode = ctx.message.text.split(" ")[1];
-  if (!orderCode) return ctx.reply("Usage: /expedie CMD-1234");
-
-  try {
-    await callApi("/api/admin-status", { orderCode, status: "EXPEDIE" });
-    await ctx.reply(`📦 Commande expédiée: ${orderCode}`);
-  } catch (e) {
-    await ctx.reply(`❌ Erreur: ${e.message}`);
-  }
-});
-
-// ✅ Clic sur boutons inline (callback_data)
+// ---- Gestion des boutons admin (callback_query)
 bot.on("callback_query", async (ctx) => {
-  if (!isAdmin(ctx)) {
-    await ctx.answerCbQuery("Accès refusé.");
-    return;
-  }
-
-  const data = ctx.callbackQuery.data || "";
-  const [action, orderCode] = data.split(":");
-  if (!action || !orderCode) {
-    await ctx.answerCbQuery("Action invalide.");
-    return;
-  }
-
   try {
+    if (!isAdmin(ctx)) {
+      return ctx.answerCbQuery("⛔ Réservé admin", { show_alert: true });
+    }
+
+    const data = ctx.callbackQuery?.data || "";
+    // Format : pay:CMD-1234:8285368651
+    const [action, orderCode, userIdStr] = data.split(":");
+    const userId = Number(userIdStr || 0);
+
+    if (!orderCode) {
+      return ctx.answerCbQuery("Erreur: orderCode manquant", { show_alert: true });
+    }
+
     if (action === "pay") {
-      await callApi("/api/admin-status", { orderCode, status: "PAYE" });
-      await ctx.answerCbQuery("Paiement confirmé ✅");
-      await ctx.editMessageReplyMarkup(); // enlève les boutons (optionnel)
+      const r = await apiPost("/api/admin-status", { orderCode, status: "PAYE" });
+      if (!r.ok || !r.data?.ok) {
+        console.error("admin-status PAYE failed:", r.status, r.data);
+        await ctx.answerCbQuery("❌ Erreur API", { show_alert: true });
+        return;
+      }
+
+      // On met le client en attente d'étiquette
+      if (userId) awaitingLabel.set(userId, orderCode);
+
+      await ctx.answerCbQuery("✅ Paiement confirmé");
+      await ctx.reply(`✅ Paiement confirmé pour ${orderCode}. (client notifié)`);
+
       return;
     }
 
     if (action === "cancel") {
-      await callApi("/api/admin-status", { orderCode, status: "ANNULE" });
-      await ctx.answerCbQuery("Commande annulée ❌");
-      await ctx.editMessageReplyMarkup();
+      const r = await apiPost("/api/admin-status", { orderCode, status: "ANNULE" });
+      if (!r.ok || !r.data?.ok) {
+        console.error("admin-status ANNULE failed:", r.status, r.data);
+        await ctx.answerCbQuery("❌ Erreur API", { show_alert: true });
+        return;
+      }
+      if (userId) awaitingLabel.delete(userId);
+
+      await ctx.answerCbQuery("✅ Annulé");
+      await ctx.reply(`❌ Commande annulée : ${orderCode}. (client notifié)`);
       return;
     }
 
     if (action === "ship") {
-      await callApi("/api/admin-status", { orderCode, status: "EXPEDIE" });
-      await ctx.answerCbQuery("Marquée expédiée 📦");
-      await ctx.editMessageReplyMarkup();
+      const r = await apiPost("/api/admin-status", { orderCode, status: "EXPEDIE" });
+      if (!r.ok || !r.data?.ok) {
+        console.error("admin-status EXPEDIE failed:", r.status, r.data);
+        await ctx.answerCbQuery("❌ Erreur API", { show_alert: true });
+        return;
+      }
+
+      if (userId) awaitingLabel.delete(userId);
+
+      await ctx.answerCbQuery("✅ Expédié");
+      await ctx.reply(`📦 Marqué expédié : ${orderCode}. (client notifié)`);
       return;
     }
 
-    await ctx.answerCbQuery("Action inconnue.");
-  } catch (e) {
-    await ctx.answerCbQuery("Erreur API ❌");
-    await ctx.reply(`❌ Erreur: ${e.message}`);
+    await ctx.answerCbQuery("Action inconnue", { show_alert: true });
+  } catch (err) {
+    console.error("callback_query error:", err);
+    try {
+      await ctx.answerCbQuery("❌ Erreur bot", { show_alert: true });
+    } catch {}
   }
 });
 
-// ✅ Réception PDF étiquette (le client envoie un document)
+// ---- Réception d’étiquette (PDF) côté client
 bot.on("document", async (ctx) => {
-  // Ici tu peux choisir : accepter que le client envoie au bot direct,
-  // et le bot te forward à toi (admin).
-  const doc = ctx.message.document;
-  const from = ctx.from;
+  try {
+    const userId = Number(ctx.from?.id || 0);
+    const doc = ctx.message?.document;
 
-  const caption =
-    `📦 ÉTIQUETTE REÇUE\n` +
-    `De: @${from.username || "inconnu"} (id ${from.id})\n` +
-    `Fichier: ${doc.file_name || "document"}`;
+    if (!doc) return;
 
-  // forward vers toi
-  await bot.telegram.sendMessage(ADMIN_CHAT_ID, caption);
-  await bot.telegram.forwardMessage(ADMIN_CHAT_ID, ctx.chat.id, ctx.message.message_id);
+    const isPdf =
+      doc.mime_type === "application/pdf" ||
+      (doc.file_name || "").toLowerCase().endsWith(".pdf");
 
-  await ctx.reply("✅ Étiquette envoyée au support.");
+    if (!isPdf) {
+      return ctx.reply("📎 Merci d’envoyer un PDF (étiquette d’envoi).");
+    }
+
+    const orderCode = awaitingLabel.get(userId);
+
+    if (!orderCode) {
+      // Pas en attente → on demande le code commande
+      return ctx.reply(
+        "📎 J’ai bien reçu le PDF.\n\n⚠️ Indiquez votre code commande (ex: CMD-1234) en message juste après, ou renvoyez le PDF avec le code dans le nom."
+      );
+    }
+
+    // Forward au support/admin
+    const username = ctx.from?.username ? `@${ctx.from.username}` : "(sans username)";
+    const caption =
+      `📦 <b>ÉTIQUETTE D’ENVOI REÇUE</b>\n` +
+      `Commande: <b>${orderCode}</b>\n` +
+      `Client: ${username} (id ${userId})\n` +
+      `Fichier: <code>${doc.file_name || "etiquette.pdf"}</code>`;
+
+    await bot.telegram.sendDocument(ADMIN_CHAT_ID, doc.file_id, {
+      caption,
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [[{ text: "✅ Étiquette OK", callback_data: `labelok:${orderCode}:${userId}` }]],
+      },
+    });
+
+    awaitingLabel.delete(userId);
+
+    await ctx.reply("✅ Étiquette reçue. Merci ! Nous traitons votre commande.");
+  } catch (err) {
+    console.error("document handler error:", err);
+    await ctx.reply("❌ Erreur lors de l’envoi. Réessayez.");
+  }
 });
 
-// Lancement
+// ---- Bouton "Étiquette OK" (optionnel, juste un accusé)
+bot.on("callback_query", async (ctx) => {
+  const data = ctx.callbackQuery?.data || "";
+  if (!data.startsWith("labelok:")) return;
+
+  try {
+    if (!isAdmin(ctx)) {
+      return ctx.answerCbQuery("⛔ Réservé admin", { show_alert: true });
+    }
+    const [, orderCode, userIdStr] = data.split(":");
+    const userId = Number(userIdStr || 0);
+
+    await ctx.answerCbQuery("✅ Noté");
+
+    if (userId) {
+      await bot.telegram.sendMessage(
+        userId,
+        `✅ Étiquette reçue pour <b>${orderCode}</b>.\n📦 Merci, on prépare l’expédition.`,
+        { parse_mode: "HTML" }
+      );
+    }
+  } catch (e) {
+    console.error("labelok callback error:", e);
+  }
+});
+
+// ---- Lancement
 (async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
     await bot.launch();
     console.log("✅ UrbanFungi bot lancé");
   } catch (err) {
-    console.error("❌ Erreur lancement :", err);
+    console.error("❌ Erreur lancement bot :", err);
   }
 })();
 
