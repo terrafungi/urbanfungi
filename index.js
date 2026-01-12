@@ -12,12 +12,12 @@ if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
 const bot = new Telegraf(BOT_TOKEN);
 
 // 🔹 START
-bot.start(async (ctx) => {
+bot.command("shop", async (ctx) => {
   await ctx.reply(
-    "🍄 UrbanFungi — Boutique\n\nClique ici :",
+    "🛒 Ouvrir la boutique (mode Mini App) :",
     Markup.inlineKeyboard([
       Markup.button.webApp(
-        "🛒 Ouvrir la boutique",
+        "✅ Ouvrir la boutique",
         "https://urbanfungi-miniapp.onrender.com"
       )
     ])
