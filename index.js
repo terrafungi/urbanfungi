@@ -1,14 +1,11 @@
 /**
  * UrbanFungi Bot — Telegraf + Webhook + Express (Render friendly)
+ * - Logs complets (debug)
+ * - Mini-app -> web_app_data (sendData)
  * - Paiement BTC / Transcash
  * - Validation admin -> demande PDF
  * - Réception PDF (document) -> forward admin
  */
-bot.on("message", (ctx, next) => {
-  console.log("INCOMING MESSAGE:", JSON.stringify(ctx.message));
-  return next();
-});
-
 
 const fs = require("fs");
 const path = require("path");
@@ -22,16 +19,8 @@ if (!BOT_TOKEN) throw new Error("❌ BOT_TOKEN manquant");
 const WEBAPP_URL = (process.env.WEBAPP_URL || "").trim();
 if (!WEBAPP_URL) throw new Error("❌ WEBAPP_URL manquant (URL miniapp)");
 
-const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0"); // où tu reçois les notifs (toi ou groupe)
-const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0"); // TON user id perso
-
-function isAdmin(ctx) {
-  // si ADMIN_USER_ID est défini => seuls tes clics admin sont acceptés
-  if (ADMIN_USER_ID) return ctx.from?.id === ADMIN_USER_ID;
-
-  // sinon (fallback) on autorise tout (pas recommandé), mais ça évite de bloquer
-  return true;
-}
+const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0"); // chat où tu veux recevoir les notifs admin (DM ou groupe)
+const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0"); // ton user id perso (recommandé)
 
 const BTC_ADDRESS = (process.env.BTC_ADDRESS || "").trim();
 const TRANSCASH_TEXT =
@@ -43,7 +32,9 @@ const WEBHOOK_BASE_URL = (process.env.WEBHOOK_BASE_URL || "").trim();
 const WEBHOOK_SECRET = (process.env.WEBHOOK_SECRET || "").trim();
 
 if (!WEBHOOK_BASE_URL) {
-  throw new Error('❌ WEBHOOK_BASE_URL manquant (ex: "https://urbanfungi-tp50.onrender.com")');
+  throw new Error(
+    '❌ WEBHOOK_BASE_URL manquant (ex: "https://urbanfungi-tp50.onrender.com")'
+  );
 }
 if (!WEBHOOK_SECRET) {
   throw new Error('❌ WEBHOOK_SECRET manquant (ex: "uf_x9Kp2dLx7")');
@@ -69,6 +60,7 @@ function saveStore(store) {
   fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), "utf8");
 }
 
+// ================== UTILS ==================
 function newOrderCode() {
   const d = new Date();
   const y = d.getFullYear();
@@ -77,9 +69,22 @@ function newOrderCode() {
   const rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `UF-${y}${m}${day}-${rnd}`;
 }
-
 function euro(n) {
   return Number(n || 0).toFixed(2);
+}
+
+// Admin check (UNE SEULE FOIS, pas de doublon)
+function isAdmin(ctx) {
+  if (ADMIN_USER_ID) return ctx.from?.id === ADMIN_USER_ID;
+
+  // fallback: si pas d'ADMIN_USER_ID, on accepte uniquement depuis ADMIN_CHAT_ID
+  const chatId =
+    ctx.chat?.id ||
+    ctx.update?.callback_query?.message?.chat?.id ||
+    0;
+
+  if (ADMIN_CHAT_ID) return Number(chatId) === ADMIN_CHAT_ID;
+  return false;
 }
 
 // ================== Keyboards ==================
@@ -126,7 +131,9 @@ function formatOrder(order) {
   lines.push("📦 Articles :");
   for (const it of order.items || []) {
     const opts =
-      it.options && typeof it.options === "object" && Object.keys(it.options).length
+      it.options &&
+      typeof it.options === "object" &&
+      Object.keys(it.options).length
         ? ` (${Object.entries(it.options)
             .map(([k, v]) => `${k}:${Array.isArray(v) ? v.join(",") : String(v)}`)
             .join(" | ")})`
@@ -140,8 +147,95 @@ function formatOrder(order) {
 
 // ================== BOT ==================
 const bot = new Telegraf(BOT_TOKEN);
+
+// ======== DEBUG (LOGS) ========
+let lastWebAppRaw = "";
+let lastWebAppParsed = null;
+
+bot.use(async (ctx, next) => {
+  try {
+    const u = ctx.update || {};
+    const type =
+      u.message
+        ? "message"
+        : u.callback_query
+        ? "callback_query"
+        : u.edited_message
+        ? "edited_message"
+        : "other";
+
+    const fromId =
+      u.message?.from?.id ||
+      u.callback_query?.from?.id ||
+      u.edited_message?.from?.id ||
+      0;
+
+    const chatId =
+      u.message?.chat?.id ||
+      u.callback_query?.message?.chat?.id ||
+      u.edited_message?.chat?.id ||
+      0;
+
+    console.log("========== UPDATE ==========");
+    console.log("TYPE:", type, "from:", fromId, "chat:", chatId);
+
+    if (u.message) {
+      console.log("MESSAGE KEYS:", Object.keys(u.message));
+      if (u.message.web_app_data?.data) {
+        lastWebAppRaw = u.message.web_app_data.data;
+        console.log("✅ WEB_APP_DATA RAW:", lastWebAppRaw);
+
+        try {
+          lastWebAppParsed = JSON.parse(lastWebAppRaw);
+          console.log("✅ WEB_APP_DATA PARSED:", JSON.stringify(lastWebAppParsed));
+        } catch (e) {
+          lastWebAppParsed = null;
+          console.log("❌ WEB_APP_DATA JSON PARSE ERROR:", String(e));
+        }
+      }
+    }
+
+    if (u.callback_query) {
+      console.log("CALLBACK DATA:", u.callback_query.data);
+    }
+
+    console.log("============================");
+  } catch (e) {
+    console.log("❌ LOG MIDDLEWARE ERROR:", e);
+  }
+
+  return next();
+});
+
+bot.catch((err, ctx) => {
+  console.log("❌ BOT ERROR:", err);
+  try {
+    console.log("CTX UPDATE:", JSON.stringify(ctx.update));
+  } catch {}
+});
+
+// ======== COMMANDES ========
 bot.command("id", async (ctx) => {
   await ctx.reply(`user_id=${ctx.from.id}\nchat_id=${ctx.chat.id}`);
+});
+
+bot.command("ping", async (ctx) => {
+  await ctx.reply("✅ Bot OK");
+});
+
+bot.command("last", async (ctx) => {
+  if (!lastWebAppRaw) {
+    return ctx.reply("❌ Aucune web_app_data reçue pour l’instant.");
+  }
+  // on évite de spammer trop long
+  const raw = lastWebAppRaw.length > 3500 ? lastWebAppRaw.slice(0, 3500) + "..." : lastWebAppRaw;
+  await ctx.reply("Dernière web_app_data RAW:\n" + raw);
+
+  if (lastWebAppParsed) {
+    const pretty = JSON.stringify(lastWebAppParsed, null, 2);
+    const cut = pretty.length > 3500 ? pretty.slice(0, 3500) + "..." : pretty;
+    await ctx.reply("Dernière web_app_data PARSED:\n" + cut);
+  }
 });
 
 // /start & /shop
@@ -157,13 +251,8 @@ bot.command("shop", async (ctx) => {
   await ctx.reply("🛒 Ouvrir la boutique :", userKeyboard());
 });
 
-// ping debug
-bot.command("ping", async (ctx) => {
-  await ctx.reply("✅ Bot OK");
-});
-
-// réception messages (commande / pdf / transcash)
-bot.on("message", async (ctx, next) => {
+// ================== RECEPTION MESSAGES ==================
+bot.on("message", async (ctx) => {
   const msg = ctx.message;
 
   // 1) Commande envoyée par miniapp via sendData()
@@ -171,15 +260,16 @@ bot.on("message", async (ctx, next) => {
     let payload;
     try {
       payload = JSON.parse(msg.web_app_data.data);
-    } catch {
-      await ctx.reply("❌ Données commande illisibles.");
+    } catch (e) {
+      console.log("❌ JSON parse error web_app_data:", e);
+      await ctx.reply("❌ Données commande illisibles (JSON invalide).");
       return;
     }
 
     const items = Array.isArray(payload?.items) ? payload.items : [];
     const totalEur = Number(payload?.totalEur || 0);
     if (!items.length) {
-      await ctx.reply("❌ Commande vide.");
+      await ctx.reply("❌ Commande vide (items=[]).");
       return;
     }
 
@@ -213,11 +303,18 @@ bot.on("message", async (ctx, next) => {
       payKeyboard(orderCode)
     );
 
+    // notif admin
     if (ADMIN_CHAT_ID) {
-      await bot.telegram.sendMessage(ADMIN_CHAT_ID, formatOrder(order), {
-        parse_mode: "Markdown",
-        ...adminKeyboard(orderCode),
-      });
+      try {
+        await bot.telegram.sendMessage(ADMIN_CHAT_ID, formatOrder(order), {
+          parse_mode: "Markdown",
+          ...adminKeyboard(orderCode),
+        });
+      } catch (e) {
+        console.log("❌ ADMIN SEND ERROR:", e?.response || e);
+      }
+    } else {
+      console.log("⚠️ ADMIN_CHAT_ID=0 -> pas de notif admin");
     }
     return;
   }
@@ -232,7 +329,9 @@ bot.on("message", async (ctx, next) => {
     const current = orders.find((o) => o.status === "AWAITING_LABEL");
 
     if (!current) {
-      await ctx.reply("Je n’attends pas encore le PDF (attendez la validation du paiement).");
+      await ctx.reply(
+        "Je n’attends pas encore le PDF (attendez la validation du paiement)."
+      );
       return;
     }
 
@@ -244,12 +343,20 @@ bot.on("message", async (ctx, next) => {
     await ctx.reply("✅ PDF reçu ! Merci, on traite la commande.");
 
     if (ADMIN_CHAT_ID) {
-      await bot.telegram.sendMessage(
-        ADMIN_CHAT_ID,
-        `📄 PDF reçu pour *${current.orderCode}* ✅`,
-        { parse_mode: "Markdown" }
-      );
-      await bot.telegram.forwardMessage(ADMIN_CHAT_ID, ctx.chat.id, msg.message_id);
+      try {
+        await bot.telegram.sendMessage(
+          ADMIN_CHAT_ID,
+          `📄 PDF reçu pour *${current.orderCode}* ✅`,
+          { parse_mode: "Markdown" }
+        );
+        await bot.telegram.forwardMessage(
+          ADMIN_CHAT_ID,
+          ctx.chat.id,
+          msg.message_id
+        );
+      } catch (e) {
+        console.log("❌ ADMIN PDF FORWARD ERROR:", e?.response || e);
+      }
     }
     return;
   }
@@ -279,18 +386,22 @@ bot.on("message", async (ctx, next) => {
         );
 
         if (ADMIN_CHAT_ID) {
-          await bot.telegram.sendMessage(
-            ADMIN_CHAT_ID,
-            `💳 Transcash reçu ✅\nCommande: *${current.orderCode}*\nCode: \`${text}\``,
-            { parse_mode: "Markdown", ...adminKeyboard(current.orderCode) }
-          );
+          try {
+            await bot.telegram.sendMessage(
+              ADMIN_CHAT_ID,
+              `💳 Transcash reçu ✅\nCommande: *${current.orderCode}*\nCode: \`${text}\``,
+              { parse_mode: "Markdown", ...adminKeyboard(current.orderCode) }
+            );
+          } catch (e) {
+            console.log("❌ ADMIN TC SEND ERROR:", e?.response || e);
+          }
         }
         return;
       }
     }
   }
 
-  return next();
+  // sinon: ne rien faire
 });
 
 // ================== ACTIONS CLIENT ==================
@@ -301,7 +412,6 @@ bot.action(/^PAY_BTC:(.+)$/, async (ctx) => {
     await ctx.reply("❌ Adresse BTC non configurée (admin).");
     return;
   }
-
   await ctx.replyWithMarkdown(
     `₿ *Bitcoin — ${orderCode}*\n\n` +
       `Adresse: \`${BTC_ADDRESS}\`\n\n` +
@@ -313,7 +423,6 @@ bot.action(/^PAY_BTC:(.+)$/, async (ctx) => {
 bot.action(/^PAY_TC:(.+)$/, async (ctx) => {
   const orderCode = ctx.match[1];
   await ctx.answerCbQuery("Transcash");
-
   await ctx.replyWithMarkdown(
     `💳 *Transcash — ${orderCode}*\n\n` +
       `${TRANSCASH_TEXT}\n\n` +
@@ -330,12 +439,6 @@ bot.action(/^SEND_PDF:(.+)$/, async (ctx) => {
 });
 
 // ================== ACTIONS ADMIN ==================
-// ================== ACTIONS ADMIN ==================
-function isAdmin(ctx) {
-  return ADMIN_USER_ID ? ctx.from?.id === ADMIN_USER_ID : false;
-}
-
-// ✅ Paiement OK (admin)
 bot.action(/^ADM_PAID:(.+)$/, async (ctx) => {
   const orderCode = ctx.match[1];
 
@@ -354,11 +457,15 @@ bot.action(/^ADM_PAID:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery("Validé ✅");
 
   // Message client
-  await bot.telegram.sendMessage(
-    order.userId,
-    `✅ Paiement validé pour *${orderCode}*.\n\n📄 Envoyez maintenant votre *étiquette PDF* ici (document).`,
-    { parse_mode: "Markdown" }
-  );
+  try {
+    await bot.telegram.sendMessage(
+      order.userId,
+      `✅ Paiement validé pour *${orderCode}*.\n\n📄 Envoyez maintenant votre *étiquette PDF* ici (document).`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {
+    console.log("❌ SEND TO CLIENT ERROR:", e?.response || e);
+  }
 });
 
 bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
@@ -374,16 +481,16 @@ bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
   saveStore(store);
 
   await ctx.answerCbQuery("Annulé");
-  await bot.telegram.sendMessage(order.userId, `❌ Commande *${orderCode}* annulée.`, {
-    parse_mode: "Markdown",
-  });
 
   try {
-    await ctx.editMessageText(formatOrder(order), {
-      parse_mode: "Markdown",
-      ...adminKeyboard(orderCode),
-    });
-  } catch {}
+    await bot.telegram.sendMessage(
+      order.userId,
+      `❌ Commande *${orderCode}* annulée.`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {
+    console.log("❌ SEND CANCEL TO CLIENT ERROR:", e?.response || e);
+  }
 });
 
 bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
@@ -399,27 +506,30 @@ bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
   saveStore(store);
 
   await ctx.answerCbQuery("OK");
-  await bot.telegram.sendMessage(order.userId, `✅ Commande *${orderCode}* finalisée. Merci !`, {
-    parse_mode: "Markdown",
-  });
 
   try {
-    await ctx.editMessageText(formatOrder(order), {
-      parse_mode: "Markdown",
-      ...adminKeyboard(orderCode),
-    });
-  } catch {}
+    await bot.telegram.sendMessage(
+      order.userId,
+      `✅ Commande *${orderCode}* finalisée. Merci !`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {
+    console.log("❌ SEND DONE TO CLIENT ERROR:", e?.response || e);
+  }
 });
 
 // ================== EXPRESS WEBHOOK SERVER ==================
 const app = express();
 
+// Body parser (important pour recevoir les updates Telegram)
+app.use(express.json({ limit: "2mb" }));
+
 // Health OK (Render)
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 
-// Webhook Telegraf
-app.use(bot.webhookCallback(HOOK_PATH));
+// Webhook Telegraf (monté uniquement sur HOOK_PATH)
+app.use(HOOK_PATH, bot.webhookCallback(HOOK_PATH));
 
 async function start() {
   // Pose le webhook Telegram vers TON service Render
@@ -430,6 +540,7 @@ async function start() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log("✅ HTTP listening on", PORT);
     console.log("✅ Bot webhook path:", HOOK_PATH);
+    console.log("✅ ADMIN_CHAT_ID:", ADMIN_CHAT_ID, "ADMIN_USER_ID:", ADMIN_USER_ID);
   });
 }
 
