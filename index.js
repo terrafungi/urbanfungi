@@ -325,13 +325,17 @@ bot.action(/^SEND_PDF:(.+)$/, async (ctx) => {
 });
 
 // ================== ACTIONS ADMIN ==================
+// ================== ACTIONS ADMIN ==================
 function isAdmin(ctx) {
   return ADMIN_USER_ID ? ctx.from?.id === ADMIN_USER_ID : false;
 }
 
+// ✅ Paiement OK (admin)
+bot.action(/^ADM_PAID:(.+)$/, async (ctx) => {
+  const orderCode = ctx.match[1];
+
   if (!isAdmin(ctx)) {
-    await ctx.answerCbQuery("Admin only", { show_alert: true });
-    return;
+    return ctx.answerCbQuery("Admin only", { show_alert: true });
   }
 
   const store = loadStore();
@@ -343,18 +347,13 @@ function isAdmin(ctx) {
   saveStore(store);
 
   await ctx.answerCbQuery("Validé ✅");
+
+  // Message client
   await bot.telegram.sendMessage(
     order.userId,
     `✅ Paiement validé pour *${orderCode}*.\n\n📄 Envoyez maintenant votre *étiquette PDF* ici (document).`,
     { parse_mode: "Markdown" }
   );
-
-  try {
-    await ctx.editMessageText(formatOrder(order), {
-      parse_mode: "Markdown",
-      ...adminKeyboard(orderCode),
-    });
-  } catch {}
 });
 
 bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
