@@ -18,9 +18,16 @@ const WEBAPP_URL = (process.env.WEBAPP_URL || "").trim();
 if (!WEBAPP_URL) throw new Error("❌ WEBAPP_URL manquant (URL miniapp)");
 
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0"); // où tu reçois les notifs (toi ou groupe)
+const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0"); // TON user id perso
+
 function isAdmin(ctx) {
-  return ADMIN_USER_ID ? ctx.from?.id === ADMIN_USER_ID : true;
+  // si ADMIN_USER_ID est défini => seuls tes clics admin sont acceptés
+  if (ADMIN_USER_ID) return ctx.from?.id === ADMIN_USER_ID;
+
+  // sinon (fallback) on autorise tout (pas recommandé), mais ça évite de bloquer
+  return true;
 }
+
 const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || (ADMIN_CHAT_ID > 0 ? ADMIN_CHAT_ID : "0")); // qui a le droit aux boutons admin
 
 const BTC_ADDRESS = (process.env.BTC_ADDRESS || "").trim();
