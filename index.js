@@ -18,6 +18,11 @@ const WEBAPP_URL = (process.env.WEBAPP_URL || "").trim();
 if (!WEBAPP_URL) throw new Error("❌ WEBAPP_URL manquant (URL miniapp)");
 
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0"); // où tu reçois les notifs (toi ou groupe)
+const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0");
+
+function isAdmin(ctx) {
+  return ADMIN_USER_ID ? ctx.from?.id === ADMIN_USER_ID : true;
+}
 const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || (ADMIN_CHAT_ID > 0 ? ADMIN_CHAT_ID : "0")); // qui a le droit aux boutons admin
 
 const BTC_ADDRESS = (process.env.BTC_ADDRESS || "").trim();
@@ -127,6 +132,9 @@ function formatOrder(order) {
 
 // ================== BOT ==================
 const bot = new Telegraf(BOT_TOKEN);
+bot.command("id", async (ctx) => {
+  await ctx.reply(`user_id=${ctx.from.id}\nchat_id=${ctx.chat.id}`);
+});
 
 // /start & /shop
 bot.start(async (ctx) => {
@@ -318,9 +326,10 @@ function isAdmin(ctx) {
   return ADMIN_USER_ID ? ctx.from?.id === ADMIN_USER_ID : false;
 }
 
-bot.action(/^ADM_PAID:(.+)$/, async (ctx) => {
-  const orderCode = ctx.match[1];
-  if (!isAdmin(ctx)) return ctx.answerCbQuery("Admin only", { show_alert: true });
+  if (!isAdmin(ctx)) {
+    await ctx.answerCbQuery("Admin only", { show_alert: true });
+    return;
+  }
 
   const store = loadStore();
   const order = store.orders[orderCode];
