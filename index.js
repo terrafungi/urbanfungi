@@ -131,10 +131,20 @@ bot.on("message", async (ctx, next) => {
       payload = null;
     }
 
-    if (!payload || payload.type !== "ORDER") {
-      await ctx.reply("❌ Commande invalide.");
-      return;
-    }
+    if (!payload) {
+  await ctx.reply("❌ Commande invalide.");
+  return;
+}
+
+// ✅ accepte si type=ORDER OU si items+totalEur existent
+const okOrder =
+  payload.type === "ORDER" ||
+  (Array.isArray(payload.items) && typeof payload.totalEur !== "undefined");
+
+if (!okOrder) {
+  await ctx.reply("❌ Commande invalide.");
+  return;
+}
 
     const store = loadStore();
     const orderCode = newOrderCode();
