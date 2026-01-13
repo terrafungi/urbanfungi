@@ -18,8 +18,6 @@ const WEBAPP_URL = (process.env.WEBAPP_URL || "").trim();
 if (!WEBAPP_URL) throw new Error("❌ WEBAPP_URL manquant (URL miniapp)");
 
 const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0"); // où tu reçois les notifs (toi ou groupe)
-const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0");
-
 function isAdmin(ctx) {
   return ADMIN_USER_ID ? ctx.from?.id === ADMIN_USER_ID : true;
 }
