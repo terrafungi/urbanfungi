@@ -28,8 +28,6 @@ function isAdmin(ctx) {
   return true;
 }
 
-const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || (ADMIN_CHAT_ID > 0 ? ADMIN_CHAT_ID : "0")); // qui a le droit aux boutons admin
-
 const BTC_ADDRESS = (process.env.BTC_ADDRESS || "").trim();
 const TRANSCASH_TEXT =
   (process.env.TRANSCASH_TEXT || "").trim() ||
