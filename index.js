@@ -4,6 +4,11 @@
  * - Validation admin -> demande PDF
  * - Réception PDF (document) -> forward admin
  */
+bot.on("message", (ctx, next) => {
+  console.log("INCOMING MESSAGE:", JSON.stringify(ctx.message));
+  return next();
+});
+
 
 const fs = require("fs");
 const path = require("path");
