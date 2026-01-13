@@ -1,281 +1,412 @@
+/**
+ * UrbanFungi Bot + API (Render / Node)
+ * - Telegraf bot
+ * - Express API: POST /api/create-order
+ * - Sends payment instructions (BTC / Transcash)
+ * - Receives Transcash codes + PDF labels from users and forwards to admin
+ *
+ * ✅ CommonJS (require) => pas d'erreur ESM
+ */
+
+const express = require("express");
+const cors = require("cors");
 const { Telegraf, Markup } = require("telegraf");
 
+// =========================
+// ENV
+// =========================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) throw new Error("BOT_TOKEN missing");
+if (!BOT_TOKEN) {
+  console.error("❌ BOT_TOKEN manquant dans les variables d'environnement.");
+  process.exit(1);
+}
 
-const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || 0); // ex: 123456789
-const BTC_ADDRESS = process.env.BTC_ADDRESS || ""; // votre adresse BTC
-const TRANSCASH_TEXT =
-  process.env.TRANSCASH_TEXT ||
-  "Envoyez votre code Transcash + montant exact ici dans le chat.";
+const PORT = process.env.PORT || 3000;
 
+// URL de la mini-app (webapp) affichée dans Telegram
+const WEBAPP_URL = process.env.WEBAPP_URL || "https://urbfgi.fun/";
+
+// Admin (ton chat Telegram ID) pour recevoir les commandes/codes/pdf
+// (ex: 123456789)
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID ? Number(process.env.ADMIN_CHAT_ID) : null;
+
+// Paiement
+const BTC_ADDRESS = process.env.BTC_ADDRESS || "TON_ADRESSE_BITCOIN_ICI";
+const TRANSCASH_INSTRUCTIONS =
+  process.env.TRANSCASH_INSTRUCTIONS ||
+  "Envoyez votre code Transcash ici (ex: 1234-5678-9012-3456).";
+
+// Support / liens
+const WHATSAPP_URL = process.env.WHATSAPP_URL || "";
+
+// =========================
+// Bot
+// =========================
 const bot = new Telegraf(BOT_TOKEN);
 
-// --- mini "DB" mémoire (simple)
-const orders = new Map(); // orderCode -> order
-const lastOrderByChat = new Map(); // chatId -> orderCode
+// Mémoire simple (suffisant)
+const ordersByCode = new Map();          // orderCode -> order payload
+const lastOrderByUser = new Map();       // userId -> last orderCode
+const pendingByUser = new Map();         // userId -> { type: "transcash"|"label"|"btc", orderCode }
 
-function makeCode() {
+// =========================
+// Helpers
+// =========================
+function money(n) {
+  return Number(n || 0).toFixed(2);
+}
+
+function nowCode() {
+  // code court lisible
   const d = new Date();
-  const y = d.getFullYear();
+  const y = String(d.getFullYear()).slice(2);
   const m = String(d.getMonth() + 1).padStart(2, "0");
-  const da = String(d.getDate()).padStart(2, "0");
-  const r = Math.random().toString(16).slice(2, 6).toUpperCase();
-  return `UF-${y}${m}${da}-${r}`;
+  const day = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `UF-${y}${m}${day}-${hh}${mm}-${rnd}`;
 }
 
-function fmtOrder(order) {
-  const lines = [];
-  lines.push(`🧾 **Commande ${order.code}**`);
-  lines.push(`Total: **${Number(order.totalEur || 0).toFixed(2)} €**`);
-  lines.push(`Articles: ${order.items?.length || 0}`);
-  lines.push("");
-  lines.push("Choisissez un moyen de paiement :");
-  return lines.join("\n");
+function summarizeItems(items) {
+  const safe = Array.isArray(items) ? items : [];
+  if (!safe.length) return "—";
+  return safe
+    .map((it) => {
+      const qty = Number(it.qty || 0);
+      const price = Number(it.prix || 0);
+      const opts =
+        it.options && typeof it.options === "object"
+          ? Object.entries(it.options)
+              .map(([k, v]) => `${k}:${Array.isArray(v) ? v.join(",") : v}`)
+              .join(" | ")
+          : "";
+      return `• ${it.nom || it.id} x${qty} — ${money(price)}€${opts ? ` (${opts})` : ""}`;
+    })
+    .join("\n");
 }
 
-function payKeyboard(code) {
+function shopButtonsInline() {
   return Markup.inlineKeyboard([
-    [
-      Markup.button.callback("₿ Bitcoin", `pay_btc:${code}`),
-      Markup.button.callback("💳 Transcash", `pay_tc:${code}`),
-    ],
+    [Markup.button.webApp("🛒 Ouvrir la boutique", WEBAPP_URL)],
+    WHATSAPP_URL ? [Markup.button.url("💬 Support WhatsApp", WHATSAPP_URL)] : [],
+  ].filter(row => row.length));
+}
+
+function shopButtonsKeyboard() {
+  return Markup.keyboard([[Markup.button.webApp("🛒 Ouvrir la boutique", WEBAPP_URL)]])
+    .resize()
+    .persistent();
+}
+
+function paymentButtons(orderCode) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("₿ Payer en Bitcoin", `PAY_BTC:${orderCode}`)],
+    [Markup.button.callback("💳 Payer en Transcash", `PAY_TC:${orderCode}`)],
+    [Markup.button.callback("📎 Envoyer l'étiquette PDF", `LABEL:${orderCode}`)],
   ]);
 }
 
-function adminKeyboard(code) {
-  return Markup.inlineKeyboard([
-    [
-      Markup.button.callback("✅ Paiement OK", `admin_paid:${code}`),
-      Markup.button.callback("❌ Annuler", `admin_cancel:${code}`),
-    ],
-    [Markup.button.callback("📄 Étiquette reçue", `admin_label:${code}`)],
-  ]);
-}
-
-// --- commandes utiles
-bot.start(async (ctx) => {
-  await ctx.reply(
-    "🍄 UrbanFungi\n\nOuvrez la boutique via le bouton WebApp, faites votre panier, puis cliquez sur ✅ Commander.\n\nSi besoin: /id",
-  );
-});
-
-bot.command("id", async (ctx) => {
-  await ctx.reply(`chat_id = ${ctx.chat.id}`);
-});
-
-// --- réception commande depuis MiniApp (web_app_data)
-bot.on("message", async (ctx, next) => {
-  const wad = ctx.message?.web_app_data;
-  if (!wad?.data) return next();
-
-  let payload = null;
+async function notifyAdmin(text, extraMarkup) {
+  if (!ADMIN_CHAT_ID) return;
   try {
-    payload = JSON.parse(wad.data);
-  } catch {
-    await ctx.reply("❌ Données commande illisibles.");
-    return;
+    if (extraMarkup) await bot.telegram.sendMessage(ADMIN_CHAT_ID, text, extraMarkup);
+    else await bot.telegram.sendMessage(ADMIN_CHAT_ID, text);
+  } catch (e) {
+    console.error("Admin notify error:", e?.message || e);
   }
+}
 
-  const items = Array.isArray(payload?.items) ? payload.items : [];
-  const totalEur = Number(payload?.totalEur || 0);
-
-  if (!items.length || !Number.isFinite(totalEur)) {
-    await ctx.reply("❌ Commande invalide (items/total).");
-    return;
+async function sendUserMessage(userId, text, extraMarkup) {
+  try {
+    if (extraMarkup) await bot.telegram.sendMessage(userId, text, extraMarkup);
+    else await bot.telegram.sendMessage(userId, text);
+    return true;
+  } catch (e) {
+    console.error("sendUserMessage error:", e?.message || e);
+    return false;
   }
+}
 
-  const code = makeCode();
-  const order = {
-    code,
-    chatId: ctx.chat.id,
-    userId: ctx.from?.id || null,
-    username: ctx.from?.username || "",
-    items,
-    totalEur,
-    status: "awaiting_payment",
-    createdAt: new Date().toISOString(),
-  };
+// =========================
+// Commands
+// =========================
+bot.start(async (ctx) => {
+  const msg =
+    "🍄 *UrbanFungi*\n\n" +
+    "Cliquez sur *🛒 Ouvrir la boutique*, faites votre panier, puis *✅ Commander*.\n\n" +
+    (WHATSAPP_URL ? "💬 Support: bouton WhatsApp ci-dessous.\n" : "");
 
-  orders.set(code, order);
-  lastOrderByChat.set(ctx.chat.id, code);
-
-  // Message client
-  await ctx.replyWithMarkdown(fmtOrder(order), payKeyboard(code));
-
-  // Message admin
-  if (ADMIN_CHAT_ID) {
-    const adminText =
-      `🔔 **Nouvelle commande ${code}**\n` +
-      `Client: ${order.username ? "@" + order.username : order.userId}\n` +
-      `Total: **${totalEur.toFixed(2)} €**\n` +
-      `Articles: ${items.length}\n\n` +
-      `👉 Validez le paiement puis demandez l'étiquette PDF.`;
-
-    await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminText, {
-      parse_mode: "Markdown",
-      ...adminKeyboard(code),
-    });
-  }
+  // 1) Inline bouton
+  await ctx.replyWithMarkdownV2(msg.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1"), shopButtonsInline());
+  // 2) Clavier (encore plus simple sur mobile)
+  await ctx.reply("Bouton rapide :", shopButtonsKeyboard());
 });
 
-// --- boutons paiement client
-bot.on("callback_query", async (ctx) => {
-  const data = ctx.callbackQuery?.data || "";
-  const [action, code] = data.split(":");
-
-  if (!code) {
-    await ctx.answerCbQuery("OK");
-    return;
-  }
-
-  const order = orders.get(code);
-  if (!order) {
-    await ctx.answerCbQuery("Commande introuvable");
-    return;
-  }
-
-  // Paiement Bitcoin
-  if (action === "pay_btc") {
-    order.status = "awaiting_payment";
-    orders.set(code, order);
-
-    const txt =
-      `₿ **Paiement Bitcoin — ${code}**\n\n` +
-      (BTC_ADDRESS
-        ? `Adresse BTC:\n\`${BTC_ADDRESS}\`\n\n`
-        : "⚠️ Adresse BTC non configurée (BTC_ADDRESS).\n\n") +
-      `Montant: **${Number(order.totalEur).toFixed(2)} €**\n\n` +
-      `✅ Après paiement, envoyez la preuve ici.\n` +
-      `⏳ Une fois validé, vous pourrez envoyer votre **étiquette PDF**.`;
-
-    await ctx.editMessageText(txt, { parse_mode: "Markdown" }).catch(() => {});
-    await ctx.answerCbQuery("Bitcoin");
-    return;
-  }
-
-  // Paiement Transcash
-  if (action === "pay_tc") {
-    order.status = "awaiting_payment";
-    orders.set(code, order);
-
-    const txt =
-      `💳 **Paiement Transcash — ${code}**\n\n` +
-      `${TRANSCASH_TEXT}\n\n` +
-      `Montant: **${Number(order.totalEur).toFixed(2)} €**\n\n` +
-      `✅ Envoyez le code Transcash ici.\n` +
-      `⏳ Une fois validé, vous pourrez envoyer votre **étiquette PDF**.`;
-
-    await ctx.editMessageText(txt, { parse_mode: "Markdown" }).catch(() => {});
-    await ctx.answerCbQuery("Transcash");
-    return;
-  }
-
-  // Admin: paiement OK
-  if (action === "admin_paid") {
-    if (ADMIN_CHAT_ID && ctx.chat.id !== ADMIN_CHAT_ID) {
-      await ctx.answerCbQuery("Admin uniquement");
-      return;
-    }
-
-    order.status = "awaiting_label";
-    orders.set(code, order);
-
-    await ctx.answerCbQuery("Paiement validé ✅");
-
-    // Notifie client
-    await bot.telegram.sendMessage(
-      order.chatId,
-      `✅ Paiement validé pour **${code}**.\n\n📄 Envoyez maintenant votre **étiquette PDF** ici (en document).`,
-      { parse_mode: "Markdown" }
-    );
-
-    // Update message admin
-    await ctx.editMessageText(
-      `✅ Paiement validé — ${code}\nEn attente de l'étiquette PDF.`,
-      { ...adminKeyboard(code) }
-    ).catch(() => {});
-    return;
-  }
-
-  // Admin: annuler
-  if (action === "admin_cancel") {
-    if (ADMIN_CHAT_ID && ctx.chat.id !== ADMIN_CHAT_ID) {
-      await ctx.answerCbQuery("Admin uniquement");
-      return;
-    }
-
-    order.status = "cancelled";
-    orders.set(code, order);
-
-    await ctx.answerCbQuery("Annulé");
-
-    await bot.telegram.sendMessage(
-      order.chatId,
-      `❌ Commande **${code}** annulée.\nSi besoin, refaites une commande.`,
-      { parse_mode: "Markdown" }
-    );
-
-    await ctx.editMessageText(`❌ Annulée — ${code}`).catch(() => {});
-    return;
-  }
-
-  // Admin: étiquette reçue
-  if (action === "admin_label") {
-    if (ADMIN_CHAT_ID && ctx.chat.id !== ADMIN_CHAT_ID) {
-      await ctx.answerCbQuery("Admin uniquement");
-      return;
-    }
-
-    order.status = "done";
-    orders.set(code, order);
-
-    await ctx.answerCbQuery("OK");
-
-    await bot.telegram.sendMessage(
-      order.chatId,
-      `✅ Étiquette reçue pour **${code}**.\nMerci !`,
-      { parse_mode: "Markdown" }
-    );
-
-    await ctx.editMessageText(`✅ Terminé — ${code}`).catch(() => {});
-    return;
-  }
-
-  await ctx.answerCbQuery("OK");
+bot.command("shop", async (ctx) => {
+  await ctx.reply("🛒 Ouvrir la boutique :", shopButtonsKeyboard());
+  await ctx.reply("Ou via bouton ci-dessous :", shopButtonsInline());
 });
 
-// --- réception PDF (document) : on l'envoie à l'admin
-bot.on("document", async (ctx) => {
-  const chatId = ctx.chat.id;
-  const last = lastOrderByChat.get(chatId);
-  const order = last ? orders.get(last) : null;
-
-  // si aucune commande trouvée
-  if (!order) return;
-
-  if (order.status !== "awaiting_label") {
-    // on laisse passer (peut-être proof de paiement)
-    return;
-  }
-
-  if (ADMIN_CHAT_ID) {
-    const caption =
-      `📄 **Étiquette PDF reçue**\nCommande: **${order.code}**\nClient: ${
-        order.username ? "@" + order.username : order.userId
-      }\n`;
-
-    await ctx.forwardMessage(ADMIN_CHAT_ID).catch(() => {});
-    await bot.telegram.sendMessage(ADMIN_CHAT_ID, caption, {
-      parse_mode: "Markdown",
-      ...adminKeyboard(order.code),
-    });
-  }
-
+bot.command("help", async (ctx) => {
   await ctx.reply(
-    `✅ PDF reçu. Attendez la confirmation.`,
+    "📌 Aide\n\n" +
+      "• /shop : afficher le bouton boutique\n" +
+      "• Après commande : choisissez Bitcoin / Transcash\n" +
+      "• Ensuite envoyez l’étiquette PDF ici\n"
   );
 });
 
-bot.launch();
-console.log("Bot started");
+// =========================
+// Callback buttons
+// =========================
+bot.action(/^PAY_BTC:(.+)$/, async (ctx) => {
+  const orderCode = ctx.match[1];
+  const userId = ctx.from?.id;
+
+  await ctx.answerCbQuery("Instructions Bitcoin envoyées ✅");
+
+  pendingByUser.set(userId, { type: "btc", orderCode });
+
+  const txt =
+    `✅ *Commande ${orderCode}*\n\n` +
+    `₿ *Paiement Bitcoin*\n` +
+    `Adresse : \`${BTC_ADDRESS}\`\n\n` +
+    `Après le paiement, envoyez ici :\n` +
+    `• le *TXID* (hash) ou une preuve\n\n` +
+    `Ensuite : cliquez sur *📎 Envoyer l'étiquette PDF* ou envoyez directement le PDF.`;
+
+  await ctx.replyWithMarkdown(txt, Markup.inlineKeyboard([
+    [Markup.button.callback("📎 Envoyer l'étiquette PDF", `LABEL:${orderCode}`)],
+  ]));
+});
+
+bot.action(/^PAY_TC:(.+)$/, async (ctx) => {
+  const orderCode = ctx.match[1];
+  const userId = ctx.from?.id;
+
+  await ctx.answerCbQuery("Instructions Transcash envoyées ✅");
+
+  pendingByUser.set(userId, { type: "transcash", orderCode });
+
+  const txt =
+    `✅ *Commande ${orderCode}*\n\n` +
+    `💳 *Paiement Transcash*\n` +
+    `${TRANSCASH_INSTRUCTIONS}\n\n` +
+    `➡️ Envoyez votre *code Transcash* ici (message texte).\n\n` +
+    `Ensuite : envoyez votre *étiquette PDF* ici.`;
+
+  await ctx.replyWithMarkdown(txt, Markup.inlineKeyboard([
+    [Markup.button.callback("📎 Envoyer l'étiquette PDF", `LABEL:${orderCode}`)],
+  ]));
+});
+
+bot.action(/^LABEL:(.+)$/, async (ctx) => {
+  const orderCode = ctx.match[1];
+  const userId = ctx.from?.id;
+
+  await ctx.answerCbQuery("Envoyez le PDF dans le chat 📎");
+
+  pendingByUser.set(userId, { type: "label", orderCode });
+
+  await ctx.reply(
+    `📎 Envoyez maintenant votre *étiquette PDF* ici.\n` +
+      `Astuce : vous pouvez mettre en légende : LABEL ${orderCode}`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// =========================
+// Receive messages (codes / pdf)
+// =========================
+bot.on("text", async (ctx) => {
+  const userId = ctx.from?.id;
+  const text = (ctx.message?.text || "").trim();
+
+  // ignore commands
+  if (text.startsWith("/")) return;
+
+  const pending = pendingByUser.get(userId);
+
+  // si pas pending, on essaie de relier au dernier order
+  const lastCode = lastOrderByUser.get(userId);
+
+  // Transcash code
+  if (pending?.type === "transcash") {
+    const orderCode = pending.orderCode || lastCode;
+    await notifyAdmin(
+      `💳 *Transcash reçu*\nCommande: *${orderCode}*\nUser: ${ctx.from?.username ? "@" + ctx.from.username : userId}\nCode: \`${text}\``,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply("✅ Code Transcash reçu. Merci !\n📎 Envoyez maintenant votre étiquette PDF ici.");
+    pendingByUser.set(userId, { type: "label", orderCode });
+    return;
+  }
+
+  // BTC TXID / preuve
+  if (pending?.type === "btc") {
+    const orderCode = pending.orderCode || lastCode;
+    await notifyAdmin(
+      `₿ *Preuve BTC reçue*\nCommande: *${orderCode}*\nUser: ${ctx.from?.username ? "@" + ctx.from.username : userId}\nMessage: \`${text}\``,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply("✅ Preuve reçue. Merci !\n📎 Envoyez maintenant votre étiquette PDF ici.");
+    pendingByUser.set(userId, { type: "label", orderCode });
+    return;
+  }
+
+  // si user tape un code au hasard, on forward à l'admin quand même (utile)
+  if (lastCode) {
+    await notifyAdmin(
+      `📩 Message client (commande ${lastCode})\nUser: ${ctx.from?.username ? "@" + ctx.from.username : userId}\nTexte: ${text}`
+    );
+  }
+});
+
+bot.on("document", async (ctx) => {
+  const userId = ctx.from?.id;
+  const doc = ctx.message?.document;
+
+  const mime = doc?.mime_type || "";
+  const fileName = doc?.file_name || "";
+
+  // On accepte PDF surtout
+  const isPdf = mime.includes("pdf") || fileName.toLowerCase().endsWith(".pdf");
+  if (!isPdf) {
+    await ctx.reply("⚠️ Merci d'envoyer un fichier PDF (étiquette).");
+    return;
+  }
+
+  // Déduire orderCode
+  const caption = (ctx.message?.caption || "").trim();
+  let orderCode = null;
+
+  // caption "LABEL UF-...."
+  const m = caption.match(/LABEL\s+([A-Z0-9\-]+)/i);
+  if (m) orderCode = m[1];
+
+  if (!orderCode) {
+    const pending = pendingByUser.get(userId);
+    orderCode = pending?.orderCode || lastOrderByUser.get(userId) || "INCONNU";
+  }
+
+  await ctx.reply(`✅ PDF reçu pour la commande ${orderCode}. Merci !`);
+
+  // Forward au admin
+  if (ADMIN_CHAT_ID) {
+    try {
+      await bot.telegram.sendMessage(
+        ADMIN_CHAT_ID,
+        `📎 *Étiquette PDF reçue*\nCommande: *${orderCode}*\nUser: ${ctx.from?.username ? "@" + ctx.from.username : userId}`,
+        { parse_mode: "Markdown" }
+      );
+      await bot.telegram.forwardMessage(ADMIN_CHAT_ID, ctx.chat.id, ctx.message.message_id);
+    } catch (e) {
+      console.error("forward pdf error:", e?.message || e);
+    }
+  }
+
+  pendingByUser.delete(userId);
+});
+
+// =========================
+// Express API
+// =========================
+const app = express();
+app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["content-type"] }));
+app.use(express.json({ limit: "2mb" }));
+
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+/**
+ * POST /api/create-order
+ * Body attendu (depuis ta miniapp):
+ * {
+ *   user: { id, username },
+ *   items: [{id, nom, prix, qty, options}],
+ *   totalEur: 12.34
+ * }
+ *
+ * Réponse:
+ * { ok: true, orderCode }
+ *
+ * ✅ IMPORTANT: on envoie un message Telegram au client ici
+ */
+app.post("/api/create-order", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const user = body.user || {};
+    const userId = Number(user.id);
+
+    if (!userId) {
+      return res.status(400).json({ ok: false, error: "Missing user.id" });
+    }
+
+    const items = Array.isArray(body.items) ? body.items : [];
+    const totalEur = Number(body.totalEur || 0);
+
+    const orderCode = nowCode();
+
+    // Save in memory
+    const order = {
+      orderCode,
+      user: { id: userId, username: user.username || "" },
+      items,
+      totalEur,
+      createdAt: new Date().toISOString(),
+      status: "PENDING_PAYMENT",
+    };
+
+    ordersByCode.set(orderCode, order);
+    lastOrderByUser.set(userId, orderCode);
+
+    // Notify admin
+    await notifyAdmin(
+      `🧾 *Nouvelle commande*\n` +
+        `Code: *${orderCode}*\n` +
+        `Client: ${order.user.username ? "@" + order.user.username : userId}\n` +
+        `Total: *${money(totalEur)}€*\n\n` +
+        `${summarizeItems(items)}`,
+      { parse_mode: "Markdown" }
+    );
+
+    // Message client (IMPORTANT => c'est ça qui manquait chez toi)
+    const sent = await sendUserMessage(
+      userId,
+      `✅ *Commande reçue !*\n\n` +
+        `📦 Code: *${orderCode}*\n` +
+        `💰 Total: *${money(totalEur)} €*\n\n` +
+        `👉 Choisissez votre moyen de paiement, puis envoyez l’étiquette PDF.`,
+      { parse_mode: "Markdown", ...paymentButtons(orderCode) }
+    );
+
+    // Si le bot ne peut pas écrire au user (user n'a pas /start), on l'indique
+    if (!sent) {
+      await notifyAdmin(
+        `⚠️ Impossible d'envoyer les instructions au client.\n` +
+          `Il doit d'abord ouvrir le bot et faire /start.\n` +
+          `UserID: ${userId}`
+      );
+    }
+
+    return res.json({ ok: true, orderCode });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// =========================
+// Start server + bot
+// =========================
+app.listen(PORT, () => {
+  console.log(`✅ API listening on :${PORT}`);
+});
+
+// Long polling
+bot.launch()
+  .then(() => console.log("✅ Bot launched (polling)"))
+  .catch((e) => console.error("Bot launch error:", e));
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
