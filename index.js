@@ -405,8 +405,30 @@ bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
 });
 
 // ========= LAUNCH =========
-bot.launch();
-console.log("✅ Bot started");
+// ========= LAUNCH (polling + retry anti-409) =========
+async function start() {
+  try {
+    // sécurité : si un webhook traîne, on l’enlève
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+
+    await bot.launch({ dropPendingUpdates: true });
+    console.log("✅ Bot started (polling)");
+  } catch (err) {
+    const code = err?.response?.error_code;
+
+    // 409 = une autre instance fait déjà getUpdates
+    if (code === 409) {
+      console.log("⚠ 409 Conflict: autre instance active. Retry dans 5s...");
+      setTimeout(start, 5000);
+      return;
+    }
+
+    console.log("❌ Launch failed:", err?.message || err);
+    process.exit(1);
+  }
+}
+
+start();
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
