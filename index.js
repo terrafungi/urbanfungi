@@ -1,8 +1,6 @@
 /**
  * UrbanFungi Bot — Telegraf + Webhook + Express (Render friendly)
- * - Paiement BTC / Transcash
- * - Validation admin -> demande PDF
- * - Réception PDF -> forward admin
+ * + Debug webhook: /webhook (TG) + /debug/webhook (HTTP)
  */
 
 const fs = require("fs");
@@ -14,18 +12,18 @@ const { Telegraf, Markup } = require("telegraf");
 const BOT_TOKEN = (process.env.BOT_TOKEN || "").trim();
 if (!BOT_TOKEN) throw new Error("❌ BOT_TOKEN manquant");
 
-const WEBAPP_URL = (process.env.WEBAPP_URL || "").trim();
+const WEBAPP_URL = (process.env.WEBAPP_URL || "").trim(); // URL de la miniapp (Render miniapp)
 if (!WEBAPP_URL) throw new Error("❌ WEBAPP_URL manquant (URL miniapp)");
 
-const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0"); // où TU reçois les notifs (toi ou groupe)
-const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0"); // TON user id perso
+const ADMIN_CHAT_ID = Number(process.env.ADMIN_CHAT_ID || "0"); // où TU reçois les notifs admin
+const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0"); // ton user_id perso
 
 const BTC_ADDRESS = (process.env.BTC_ADDRESS || "").trim();
 const TRANSCASH_TEXT =
   (process.env.TRANSCASH_TEXT || "").trim() ||
   "Envoyez votre code Transcash (copier/coller) + montant exact dans ce chat.";
 
-const WEBHOOK_BASE_URL = (process.env.WEBHOOK_BASE_URL || "").trim();
+const WEBHOOK_BASE_URL = (process.env.WEBHOOK_BASE_URL || "").trim(); // URL du service BOT Render
 const WEBHOOK_SECRET = (process.env.WEBHOOK_SECRET || "").trim();
 
 if (!WEBHOOK_BASE_URL) {
@@ -40,8 +38,6 @@ const HOOK_PATH = `/telegraf/${WEBHOOK_SECRET}`;
 const HOOK_URL = `${WEBHOOK_BASE_URL.replace(/\/+$/, "")}${HOOK_PATH}`;
 
 // ================== STORE (fichier simple) ==================
-// ⚠️ Sur Render free, le disque peut reset si redéploiement/restart.
-// Pour du stable: DB (Supabase/Redis) plus tard.
 const STORE_FILE = process.env.ORDERS_STORE || path.join(process.cwd(), "orders.json");
 
 function loadStore() {
@@ -67,7 +63,6 @@ function newOrderCode() {
 function euro(n) {
   return Number(n || 0).toFixed(2);
 }
-
 function isAdmin(ctx) {
   return ADMIN_USER_ID ? ctx.from?.id === ADMIN_USER_ID : false;
 }
@@ -123,7 +118,9 @@ function formatOrder(order) {
 // ================== BOT ==================
 const bot = new Telegraf(BOT_TOKEN);
 
-// Logs TG (sans casser les commandes)
+bot.catch((err) => console.error("❌ BOT ERROR:", err));
+
+// Logs TG
 bot.use(async (ctx, next) => {
   try {
     if (ctx.updateType === "message") {
@@ -131,38 +128,49 @@ bot.use(async (ctx, next) => {
       const from = ctx.from?.id;
       const txt = m.text ? String(m.text).slice(0, 200) : "";
       console.log(
-        `TG UPDATE: type=message from=${from} text=${txt || "-"} webapp=${!!m.web_app_data} doc=${!!m.document}`
+        `TG IN: from=${from} text=${txt || "-"} webapp=${!!m.web_app_data} doc=${!!m.document}`
       );
     } else {
-      console.log(`TG UPDATE: type=${ctx.updateType}`);
+      console.log(`TG IN: updateType=${ctx.updateType}`);
     }
   } catch {}
   return next();
 });
 
-bot.catch((err) => console.error("❌ BOT ERROR:", err));
-
-// /id
+// Debug: /id /ping
 bot.command("id", async (ctx) => {
   await ctx.reply(`user_id=${ctx.from.id}\nchat_id=${ctx.chat.id}`);
 });
-
-// /ping
 bot.command("ping", async (ctx) => {
-  console.log("PING from", ctx.from.id);
   await ctx.reply("✅ Bot OK");
 });
 
-// /start & /shop
+// 🔥 Debug webhook: /webhook (admin only)
+bot.command("webhook", async (ctx) => {
+  if (!isAdmin(ctx)) return ctx.reply("Admin only");
+  try {
+    const info = await bot.telegram.getWebhookInfo();
+    await ctx.reply(
+      `WEBHOOK INFO:\n` +
+        `url: ${info.url || "-"}\n` +
+        `pending: ${info.pending_update_count}\n` +
+        `last_error_date: ${info.last_error_date || "-"}\n` +
+        `last_error_message: ${info.last_error_message || "-"}`
+    );
+  } catch (e) {
+    await ctx.reply("❌ Impossible de lire webhook info (token/env?)");
+    console.error(e);
+  }
+});
+
+// /start /shop
 bot.start(async (ctx) => {
-  console.log("START from", ctx.from.id);
   await ctx.reply(
     "🍄 UrbanFungi\n\nCliquez sur le bouton ci-dessous pour ouvrir la boutique.",
     userKeyboard()
   );
   await ctx.reply("Si le bouton disparaît : /shop", userInlineShop());
 });
-
 bot.command("shop", async (ctx) => {
   await ctx.reply("🛒 Ouvrir la boutique :", userKeyboard());
 });
@@ -171,7 +179,7 @@ bot.command("shop", async (ctx) => {
 bot.on("message", async (ctx, next) => {
   const msg = ctx.message;
 
-  // 1) Commande envoyée par miniapp via sendData()
+  // 1) Commande miniapp via sendData()
   if (msg?.web_app_data?.data) {
     let payload;
     try {
@@ -221,9 +229,6 @@ bot.on("message", async (ctx, next) => {
         parse_mode: "Markdown",
         ...adminKeyboard(orderCode),
       });
-      console.log("ADMIN NOTIF sent to", ADMIN_CHAT_ID, "order", orderCode);
-    } else {
-      console.log("⚠️ ADMIN_CHAT_ID non défini, pas de notif admin");
     }
     return;
   }
@@ -261,7 +266,7 @@ bot.on("message", async (ctx, next) => {
   // 3) Transcash (texte)
   if (typeof msg?.text === "string") {
     const text = msg.text.trim();
-    const looksLikeCode = text.length >= 6 && text.length <= 80 && /[A-Za-z0-9]/.test(text);
+    const looksLikeCode = text.length >= 6 && text.length <= 120 && /[A-Za-z0-9]/.test(text);
 
     if (looksLikeCode) {
       const store = loadStore();
@@ -332,8 +337,6 @@ bot.action(/^ADM_PAID:(.+)$/, async (ctx) => {
     `✅ Paiement validé pour *${orderCode}*.\n\n📄 Envoyez maintenant votre *étiquette PDF* ici (document).`,
     { parse_mode: "Markdown" }
   );
-
-  console.log("PAYMENT VALIDATED order", orderCode, "user", order.userId);
 });
 
 bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
@@ -352,13 +355,6 @@ bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
   await bot.telegram.sendMessage(order.userId, `❌ Commande *${orderCode}* annulée.`, {
     parse_mode: "Markdown",
   });
-
-  try {
-    await ctx.editMessageText(formatOrder(order), {
-      parse_mode: "Markdown",
-      ...adminKeyboard(orderCode),
-    });
-  } catch {}
 });
 
 bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
@@ -377,17 +373,13 @@ bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
   await bot.telegram.sendMessage(order.userId, `✅ Commande *${orderCode}* finalisée. Merci !`, {
     parse_mode: "Markdown",
   });
-
-  try {
-    await ctx.editMessageText(formatOrder(order), {
-      parse_mode: "Markdown",
-      ...adminKeyboard(orderCode),
-    });
-  } catch {}
 });
 
 // ================== EXPRESS WEBHOOK SERVER ==================
 const app = express();
+
+// JSON body (important pour certains setups)
+app.use(express.json({ limit: "10mb" }));
 
 // Log HTTP (évite spam /health)
 app.use((req, _res, next) => {
@@ -398,25 +390,39 @@ app.use((req, _res, next) => {
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 
-// Webhook Telegraf (IMPORTANT : pas de express.json() avant)
+// ✅ Debug HTTP: /debug/webhook?key=SECRET
+app.get("/debug/webhook", async (req, res) => {
+  if (req.query.key !== WEBHOOK_SECRET) return res.status(401).send("nope");
+  try {
+    const info = await bot.telegram.getWebhookInfo();
+    res.json({
+      expected: HOOK_URL,
+      current: info.url,
+      pending: info.pending_update_count,
+      last_error_date: info.last_error_date || null,
+      last_error_message: info.last_error_message || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: "cannot_get_webhook_info" });
+  }
+});
+
+// Webhook Telegraf
 app.use(bot.webhookCallback(HOOK_PATH));
 
 async function start() {
-  console.log("BOOT CONFIG =>", {
+  console.log("BOOT CONFIG:", {
     ADMIN_CHAT_ID,
     ADMIN_USER_ID,
     WEBAPP_URL,
     HOOK_URL,
-    STORE_FILE,
+    HOOK_PATH,
   });
 
   await bot.telegram.setWebhook(HOOK_URL);
   console.log("Webhook set →", HOOK_URL);
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log("HTTP listening on", PORT);
-    console.log("Bot webhook path:", HOOK_PATH);
-  });
+  app.listen(PORT, "0.0.0.0", () => console.log("HTTP listening on", PORT));
 }
 
 start().catch((e) => {
