@@ -1,8 +1,9 @@
-// index.js
-import express from "express";
-import crypto from "crypto";
-import { Telegraf, Markup } from "telegraf";
+// index.js (COMMONJS - compatible Render sans "type":"module")
+const express = require("express");
+const crypto = require("crypto");
+const { Telegraf, Markup } = require("telegraf");
 
+// ENV
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBAPP_URL = process.env.WEBAPP_URL; // ex: https://urbanfungi-miniapp.onrender.com
 const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL; // ex: https://urbanfungi-tp50.onrender.com
@@ -14,11 +15,8 @@ if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!WEBAPP_URL) throw new Error("Missing WEBAPP_URL");
 if (!WEBHOOK_BASE_URL) throw new Error("Missing WEBHOOK_BASE_URL");
 
-// --------------------
 // Helpers
-// --------------------
 function genOrderId() {
-  // UF-YYYYMMDD-XXXX
   const d = new Date();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -26,43 +24,25 @@ function genOrderId() {
   const rnd = crypto.randomBytes(2).toString("hex").toUpperCase();
   return `UF-${y}${m}${da}-${rnd}`;
 }
-
 function euro(n) {
-  const x = Number(n || 0);
-  return x.toFixed(2);
+  return Number(n || 0).toFixed(2);
 }
-
-function isAdmin(ctx) {
-  const uid = String(ctx.from?.id || "");
-  if (ADMIN_USER_ID && uid === ADMIN_USER_ID) return true;
-  // fallback : si tu veux que l'admin soit juste le chat_id
-  const chatId = String(ctx.chat?.id || "");
-  return ADMIN_CHAT_ID && chatId === ADMIN_CHAT_ID;
-}
-
 function safeUserLabel(from) {
   const u = from?.username ? `@${from.username}` : `${from?.first_name || "User"}`;
   return `${u} (id:${from?.id})`;
 }
+function isAdmin(ctx) {
+  const uid = String(ctx.from?.id || "");
+  if (ADMIN_USER_ID && uid === ADMIN_USER_ID) return true;
+  const chatId = String(ctx.chat?.id || "");
+  return ADMIN_CHAT_ID && chatId === ADMIN_CHAT_ID;
+}
 
-// --------------------
-// In-memory store (simple)
-// --------------------
+// In-memory store
 const orders = new Map(); // orderId -> order
-const awaitingLabel = new Map(); // userId -> orderId (le client doit envoyer un PDF)
+const awaitingLabel = new Map(); // userId -> orderId
 
-// order = {
-//   id, userId, chatId, userLabel,
-//   totalEur, items,
-//   paymentMethod: "BTC"|"TRANSCASH"|null,
-//   paid: boolean,
-//   status: "NEW"|"PAYMENT_CHOSEN"|"PAID"|"CANCELLED"|"DONE"|"LABEL_RECEIVED",
-//   createdAt
-// }
-
-// --------------------
 // Bot
-// --------------------
 const bot = new Telegraf(BOT_TOKEN);
 
 bot.telegram.setMyCommands([
@@ -99,36 +79,31 @@ bot.command("webhook", async (ctx) => {
     const info = await bot.telegram.getWebhookInfo();
     await ctx.reply(
       `Webhook:\nurl: ${info.url || "-"}\n` +
-      `pending_update_count: ${info.pending_update_count}\n` +
-      `last_error_date: ${info.last_error_date || "-"}\n` +
-      `last_error_message: ${info.last_error_message || "-"}`
+        `pending_update_count: ${info.pending_update_count}\n` +
+        `last_error_date: ${info.last_error_date || "-"}\n` +
+        `last_error_message: ${info.last_error_message || "-"}`
     );
   } catch (e) {
     await ctx.reply("Erreur webhook info.");
   }
 });
 
-// --------------------
-// Receive MiniApp Orders (WEB_APP_DATA)
-// --------------------
+// Message handler (orders + PDF)
 bot.on("message", async (ctx, next) => {
   const msg = ctx.message;
 
-  // 1) Si le client envoie un PDF et qu'on l'attend
-  if (msg?.document) {
+  // 1) PDF label upload
+  if (msg && msg.document) {
     const userId = String(ctx.from?.id || "");
     const orderId = awaitingLabel.get(userId);
 
-    if (!orderId) {
-      return ctx.reply("Je n'attends pas de PDF pour le moment.");
-    }
+    if (!orderId) return ctx.reply("Je n'attends pas de PDF pour le moment.");
 
     const order = orders.get(orderId);
     if (!order || order.status !== "PAID") {
       return ctx.reply("Je n'attends pas encore le PDF (attendez la validation du paiement).");
     }
 
-    // OK : on forward à l'admin
     order.status = "LABEL_RECEIVED";
     awaitingLabel.delete(userId);
 
@@ -144,11 +119,10 @@ bot.on("message", async (ctx, next) => {
     return;
   }
 
-  // 2) Si le message contient web_app_data (commande mini-app)
-  if (msg?.web_app_data?.data) {
+  // 2) Mini App Order via web_app_data
+  if (msg && msg.web_app_data && msg.web_app_data.data) {
     try {
       const payload = JSON.parse(msg.web_app_data.data);
-
       if (payload?.type !== "ORDER") {
         await ctx.reply("Données reçues mais type inconnu.");
         return;
@@ -174,7 +148,7 @@ bot.on("message", async (ctx, next) => {
 
       orders.set(orderId, order);
 
-      // Message client
+      // Client message
       await ctx.reply(
         `✅ Commande ${orderId} reçue\nTotal: ${euro(order.totalEur)} €\n\nChoisissez votre paiement :`,
         Markup.inlineKeyboard([
@@ -183,7 +157,7 @@ bot.on("message", async (ctx, next) => {
         ])
       );
 
-      // Message admin
+      // Admin message
       if (ADMIN_CHAT_ID) {
         const lines = order.items
           .map((i) => `• ${i.nom} x${i.qty} (${euro(i.unitPrice)}€)`)
@@ -211,61 +185,44 @@ bot.on("message", async (ctx, next) => {
   return next();
 });
 
-// --------------------
-// Callbacks: paiement + admin actions
-// --------------------
+// Callback buttons
 bot.on("callback_query", async (ctx) => {
   const data = ctx.callbackQuery?.data || "";
-  const [a, b, orderId] = data.split(":");
+  const parts = data.split(":");
+  const a = parts[0];
+  const b = parts[1];
+  const orderId = parts[2];
 
-  // Paiement choisi par le client
+  // client chooses payment
   if (a === "pay") {
-    const method = b; // BTC / TRANSCASH
+    const method = b;
     const order = orders.get(orderId);
-    if (!order) {
-      await ctx.answerCbQuery("Commande introuvable");
-      return;
-    }
-    if (String(ctx.from?.id || "") !== order.userId) {
-      await ctx.answerCbQuery("Pas votre commande");
-      return;
-    }
+    if (!order) return ctx.answerCbQuery("Commande introuvable");
+    if (String(ctx.from?.id || "") !== order.userId) return ctx.answerCbQuery("Pas votre commande");
 
     order.paymentMethod = method;
     order.status = "PAYMENT_CHOSEN";
-
     await ctx.answerCbQuery("OK");
 
     if (method === "BTC") {
       await ctx.reply(
-        `₿ Paiement Bitcoin\n\nCommande: ${order.id}\nTotal: ${euro(order.totalEur)} €\n\n` +
-        `Envoyez votre TXID (ou preuve) ici après paiement.\n` +
-        `Ensuite l’admin validera le paiement.`
+        `₿ Paiement Bitcoin\n\nCommande: ${order.id}\nTotal: ${euro(order.totalEur)} €\n\nEnvoyez votre TXID (ou preuve) ici après paiement.\nPuis l’admin validera.`
       );
     } else {
       await ctx.reply(
-        `💳 Paiement Transcash\n\nCommande: ${order.id}\nTotal: ${euro(order.totalEur)} €\n\n` +
-        `Envoyez votre code Transcash + le montant exact.\n` +
-        `Ensuite l’admin validera le paiement.`
+        `💳 Paiement Transcash\n\nCommande: ${order.id}\nTotal: ${euro(order.totalEur)} €\n\nEnvoyez votre code Transcash + le montant exact.\nPuis l’admin validera.`
       );
     }
-
     return;
   }
 
-  // Actions admin
+  // admin actions
   if (a === "admin") {
-    if (!isAdmin(ctx)) {
-      await ctx.answerCbQuery("Réservé admin");
-      return;
-    }
+    if (!isAdmin(ctx)) return ctx.answerCbQuery("Réservé admin");
 
-    const action = b; // paid / cancel / done
+    const action = b;
     const order = orders.get(orderId);
-    if (!order) {
-      await ctx.answerCbQuery("Commande introuvable");
-      return;
-    }
+    if (!order) return ctx.answerCbQuery("Commande introuvable");
 
     if (action === "paid") {
       order.paid = true;
@@ -273,16 +230,12 @@ bot.on("callback_query", async (ctx) => {
       awaitingLabel.set(order.userId, order.id);
 
       await ctx.answerCbQuery("Paiement validé");
-
-      // Message admin
       await ctx.reply(`✅ Paiement validé pour ${order.id}.`);
 
-      // Message client : ENVOI PDF
       await ctx.telegram.sendMessage(
         Number(order.chatId),
         `✅ Paiement validé pour ${order.id}.\n\n📄 Envoyez maintenant votre étiquette PDF ici (en document).`
       );
-
       return;
     }
 
@@ -300,7 +253,7 @@ bot.on("callback_query", async (ctx) => {
       awaitingLabel.delete(order.userId);
       await ctx.answerCbQuery("Terminé");
       await ctx.reply(`✅ Commande ${order.id} terminée.`);
-      await ctx.telegram.sendMessage(Number(order.chatId), `✅ Votre commande ${order.id} est marquée comme terminée.`);
+      await ctx.telegram.sendMessage(Number(order.chatId), `✅ Votre commande ${order.id} est terminée.`);
       return;
     }
   }
@@ -308,9 +261,7 @@ bot.on("callback_query", async (ctx) => {
   await ctx.answerCbQuery();
 });
 
-// --------------------
-// Express Webhook server
-// --------------------
+// Express webhook server
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
@@ -318,7 +269,6 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 app.get("/", (req, res) => res.send("UrbanFungi bot: OK"));
 
 app.post(`/telegraf/${WEBHOOK_SECRET}`, (req, res) => {
-  // telegraf webhook handler
   return bot.webhookCallback(`/telegraf/${WEBHOOK_SECRET}`)(req, res);
 });
 
