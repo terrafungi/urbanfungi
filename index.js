@@ -4,6 +4,11 @@
  * - Paiement BTC / Transcash
  * - Admin valide -> demande PDF
  * - PDF reçu -> forward admin
+ *
+ * MODIF :
+ * - Suppression du bouton inline "Ouvrir la boutique" sous le message
+ * - On garde uniquement le bouton du bas (reply keyboard)
+ * - Ajout d'un texte explicatif clair dans le message
  */
 
 const fs = require("fs");
@@ -82,25 +87,20 @@ function euro(n) {
 
 // ================== Admin check ==================
 function isAdmin(ctx) {
+  // si ADMIN_USER_ID est défini => seuls tes clics admin sont acceptés
   if (ADMIN_USER_ID) return ctx.from?.id === ADMIN_USER_ID;
+  // fallback si tu n'as pas mis ADMIN_USER_ID (pas recommandé)
   return true;
 }
 
 // ================== Keyboards ==================
-// ✅ Bouton bas (Reply Keyboard) — version native ultra compatible
+// ✅ On garde uniquement le bouton du bas (Reply Keyboard)
 function userKeyboard() {
   return Markup.keyboard([
     [{ text: "🛒 Ouvrir la boutique", web_app: { url: WEBAPP_URL } }],
   ])
     .resize()
     .persistent();
-}
-
-// ✅ Bouton sous le message (Inline) — version native ultra compatible
-function userInlineShop() {
-  return Markup.inlineKeyboard([
-    [{ text: "🛒 Ouvrir la boutique", web_app: { url: WEBAPP_URL } }],
-  ]);
 }
 
 function payKeyboard(orderCode) {
@@ -157,17 +157,23 @@ bot.command("ping", async (ctx) => {
 bot.start(async (ctx) => {
   console.log("START from", ctx.from.id);
 
-  // ✅ 1) bouton dans le message (inline)
-  await ctx.reply("🍄 UrbanFungi\n\nOuvrez la boutique :", userInlineShop());
-
-  // ✅ 2) bouton du bas (fallback fiable)
-  await ctx.reply("Bouton rapide 👇", userKeyboard());
+  // ✅ Plus de bouton sous le message : on met un texte explicatif + le clavier du bas
+  await ctx.reply(
+    "🍄 UrbanFungi — Boutique\n\n" +
+      "➡️ Pour ouvrir le catalogue, utilisez le bouton **🛒 Ouvrir la boutique** en bas de l’écran.\n\n" +
+      "✅ Important : c’est ce bouton qui permet au bot de recevoir la commande automatiquement.\n\n" +
+      "ℹ️ Si vous ne voyez pas le bouton, tapez : /shop",
+    { ...userKeyboard(), parse_mode: "Markdown" }
+  );
 });
 
 bot.command("shop", async (ctx) => {
-  // ✅ inline + fallback clavier
-  await ctx.reply("🛒 Ouvrir la boutique :", userInlineShop());
-  await ctx.reply("Bouton rapide 👇", userKeyboard());
+  await ctx.reply(
+    "🛒 Boutique UrbanFungi\n\n" +
+      "➡️ Cliquez sur le bouton **🛒 Ouvrir la boutique** en bas.\n\n" +
+      "✅ C’est la méthode la plus fiable pour que la commande remonte au bot.",
+    { ...userKeyboard(), parse_mode: "Markdown" }
+  );
 });
 
 // ================== Incoming messages ==================
@@ -206,7 +212,7 @@ bot.on("message", async (ctx, next) => {
       })),
       totalEur,
       status: "AWAITING_PAYMENT",
-      paymentMethod: "",
+      paymentMethod: "",       // <--- IMPORTANT
       transcashCode: "",
       transcashAmount: "",
       labelFileId: "",
@@ -221,6 +227,7 @@ bot.on("message", async (ctx, next) => {
       payKeyboard(orderCode)
     );
 
+    // NOTIF ADMIN + BOUTONS
     if (ADMIN_CHAT_ID) {
       await bot.telegram.sendMessage(ADMIN_CHAT_ID, formatOrder(order), {
         parse_mode: "Markdown",
@@ -250,201 +257,4 @@ bot.on("message", async (ctx, next) => {
     store.orders[current.orderCode] = current;
     saveStore(store);
 
-    await ctx.reply("✅ PDF reçu ! Merci, on traite la commande.");
-
-    if (ADMIN_CHAT_ID) {
-      await bot.telegram.sendMessage(ADMIN_CHAT_ID, `📄 PDF reçu pour *${current.orderCode}* ✅`, {
-        parse_mode: "Markdown",
-      });
-      await bot.telegram.forwardMessage(ADMIN_CHAT_ID, ctx.chat.id, msg.message_id);
-    }
-    return;
-  }
-
-  // 3) Transcash (texte)
-  if (typeof msg?.text === "string") {
-    const text = msg.text.trim();
-    const store = loadStore();
-    const orders = Object.values(store.orders || {}).filter((o) => o.userId === ctx.from.id);
-    orders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-    const current = orders.find(
-      (o) => o.status === "AWAITING_PAYMENT" && o.paymentMethod === "TRANSCASH"
-    );
-
-    if (current) {
-      const parts = text.split(/\s+/).filter(Boolean);
-      const code = parts[0] || text;
-      const amount = parts.slice(1).join(" ").trim();
-
-      current.transcashCode = code;
-      current.transcashAmount = amount;
-      store.orders[current.orderCode] = current;
-      saveStore(store);
-
-      await ctx.reply(
-        `✅ Transcash reçu pour ${current.orderCode}.\n` +
-          `Code: ${code}${amount ? `\nMontant: ${amount}` : ""}\n\n` +
-          `On valide le paiement puis on vous demandera l'étiquette PDF.`
-      );
-
-      if (ADMIN_CHAT_ID) {
-        await bot.telegram.sendMessage(
-          ADMIN_CHAT_ID,
-          `💳 Transcash reçu ✅\nCommande: *${current.orderCode}*\nCode: \`${code}\`${amount ? `\nMontant: *${amount}*` : ""}`,
-          {
-            parse_mode: "Markdown",
-            reply_markup: adminKeyboard(current.orderCode).reply_markup,
-          }
-        );
-        console.log("ADMIN transcash notif sent for", current.orderCode);
-      }
-      return;
-    }
-  }
-
-  return next();
-});
-
-// ================== ACTIONS CLIENT ==================
-bot.action(/^PAY_BTC:(.+)$/, async (ctx) => {
-  const orderCode = ctx.match[1];
-  await ctx.answerCbQuery("BTC");
-
-  const store = loadStore();
-  const order = store.orders?.[orderCode];
-  if (order) {
-    order.paymentMethod = "BTC";
-    store.orders[orderCode] = order;
-    saveStore(store);
-  }
-
-  if (!BTC_ADDRESS) {
-    await ctx.reply("❌ Adresse BTC non configurée (admin).");
-    return;
-  }
-
-  await ctx.replyWithMarkdown(
-    `₿ *Bitcoin — ${orderCode}*\n\nAdresse: \`${BTC_ADDRESS}\`\n\nAprès paiement, envoyez une preuve ici.\nEnsuite on vous demandera l'étiquette PDF.`
-  );
-});
-
-bot.action(/^PAY_TC:(.+)$/, async (ctx) => {
-  const orderCode = ctx.match[1];
-  await ctx.answerCbQuery("Transcash");
-
-  const store = loadStore();
-  const order = store.orders?.[orderCode];
-  if (order) {
-    order.paymentMethod = "TRANSCASH";
-    store.orders[orderCode] = order;
-    saveStore(store);
-  }
-
-  await ctx.replyWithMarkdown(
-    `💳 *Transcash — ${orderCode}*\n\n${TRANSCASH_TEXT}\n\nEnvoyez maintenant votre *code Transcash* (vous pouvez mettre aussi le montant).`
-  );
-});
-
-bot.action(/^SEND_PDF:(.+)$/, async (ctx) => {
-  const orderCode = ctx.match[1];
-  await ctx.answerCbQuery("OK");
-  await ctx.replyWithMarkdown(`📄 Envoyez maintenant votre *étiquette PDF* pour la commande *${orderCode}*.`);
-});
-
-// ================== ACTIONS ADMIN ==================
-bot.action(/^ADM_PAID:(.+)$/, async (ctx) => {
-  const orderCode = ctx.match[1];
-
-  if (!isAdmin(ctx)) return ctx.answerCbQuery("Admin only", { show_alert: true });
-
-  const store = loadStore();
-  const order = store.orders?.[orderCode];
-  if (!order) return ctx.answerCbQuery("Introuvable", { show_alert: true });
-
-  order.status = "AWAITING_LABEL";
-  store.orders[orderCode] = order;
-  saveStore(store);
-
-  await ctx.answerCbQuery("Validé ✅");
-
-  await bot.telegram.sendMessage(
-    order.userId,
-    `✅ Paiement validé pour *${orderCode}*.\n\n📄 Envoyez maintenant votre *étiquette PDF* ici (document).`,
-    { parse_mode: "Markdown" }
-  );
-});
-
-bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
-  const orderCode = ctx.match[1];
-  if (!isAdmin(ctx)) return ctx.answerCbQuery("Admin only", { show_alert: true });
-
-  const store = loadStore();
-  const order = store.orders?.[orderCode];
-  if (!order) return ctx.answerCbQuery("Introuvable", { show_alert: true });
-
-  order.status = "CANCELED";
-  store.orders[orderCode] = order;
-  saveStore(store);
-
-  await ctx.answerCbQuery("Annulé");
-  await bot.telegram.sendMessage(order.userId, `❌ Commande *${orderCode}* annulée.`, {
-    parse_mode: "Markdown",
-  });
-
-  try {
-    await ctx.editMessageText(formatOrder(order), {
-      parse_mode: "Markdown",
-      reply_markup: adminKeyboard(orderCode).reply_markup,
-    });
-  } catch {}
-});
-
-bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
-  const orderCode = ctx.match[1];
-  if (!isAdmin(ctx)) return ctx.answerCbQuery("Admin only", { show_alert: true });
-
-  const store = loadStore();
-  const order = store.orders?.[orderCode];
-  if (!order) return ctx.answerCbQuery("Introuvable", { show_alert: true });
-
-  order.status = "DONE";
-  store.orders[orderCode] = order;
-  saveStore(store);
-
-  await ctx.answerCbQuery("OK");
-  await bot.telegram.sendMessage(order.userId, `✅ Commande *${orderCode}* finalisée. Merci !`, {
-    parse_mode: "Markdown",
-  });
-
-  try {
-    await ctx.editMessageText(formatOrder(order), {
-      parse_mode: "Markdown",
-      reply_markup: adminKeyboard(orderCode).reply_markup,
-    });
-  } catch {}
-});
-
-// ================== EXPRESS WEBHOOK SERVER ==================
-const app = express();
-
-app.get("/", (_req, res) => res.status(200).send("OK"));
-app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
-
-app.use(bot.webhookCallback(HOOK_PATH));
-
-async function start() {
-  await bot.telegram.setWebhook(HOOK_URL);
-  console.log("Webhook set →", HOOK_URL);
-  console.log("ADMIN_CHAT_ID =", ADMIN_CHAT_ID, "ADMIN_USER_ID =", ADMIN_USER_ID);
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log("HTTP listening on", PORT);
-    console.log("Bot webhook path:", HOOK_PATH);
-  });
-}
-
-start().catch((e) => {
-  console.error("❌ Startup error:", e);
-  process.exit(1);
-});
+    await ctx
