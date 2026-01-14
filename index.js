@@ -82,21 +82,27 @@ function euro(n) {
 
 // ================== Admin check ==================
 function isAdmin(ctx) {
-  // si ADMIN_USER_ID est défini => seuls tes clics admin sont acceptés
   if (ADMIN_USER_ID) return ctx.from?.id === ADMIN_USER_ID;
-  // fallback si tu n'as pas mis ADMIN_USER_ID (pas recommandé)
   return true;
 }
 
 // ================== Keyboards ==================
+// ✅ Bouton bas (Reply Keyboard) — version native ultra compatible
 function userKeyboard() {
-  return Markup.keyboard([[Markup.button.webApp("🛒 Ouvrir la boutique", WEBAPP_URL)]])
+  return Markup.keyboard([
+    [{ text: "🛒 Ouvrir la boutique", web_app: { url: WEBAPP_URL } }],
+  ])
     .resize()
     .persistent();
 }
+
+// ✅ Bouton sous le message (Inline) — version native ultra compatible
 function userInlineShop() {
-  return Markup.inlineKeyboard([[Markup.button.webApp("🛒 Ouvrir la boutique", WEBAPP_URL)]]);
+  return Markup.inlineKeyboard([
+    [{ text: "🛒 Ouvrir la boutique", web_app: { url: WEBAPP_URL } }],
+  ]);
 }
+
 function payKeyboard(orderCode) {
   return Markup.inlineKeyboard([
     [
@@ -150,12 +156,18 @@ bot.command("ping", async (ctx) => {
 
 bot.start(async (ctx) => {
   console.log("START from", ctx.from.id);
-  await ctx.reply("🍄 UrbanFungi\n\nCliquez ci-dessous :", userKeyboard());
-  await ctx.reply("Si le bouton disparaît : /shop", userInlineShop());
+
+  // ✅ 1) bouton dans le message (inline)
+  await ctx.reply("🍄 UrbanFungi\n\nOuvrez la boutique :", userInlineShop());
+
+  // ✅ 2) bouton du bas (fallback fiable)
+  await ctx.reply("Bouton rapide 👇", userKeyboard());
 });
 
 bot.command("shop", async (ctx) => {
-  await ctx.reply("🛒 Ouvrir la boutique :", userKeyboard());
+  // ✅ inline + fallback clavier
+  await ctx.reply("🛒 Ouvrir la boutique :", userInlineShop());
+  await ctx.reply("Bouton rapide 👇", userKeyboard());
 });
 
 // ================== Incoming messages ==================
@@ -194,7 +206,7 @@ bot.on("message", async (ctx, next) => {
       })),
       totalEur,
       status: "AWAITING_PAYMENT",
-      paymentMethod: "",       // <--- IMPORTANT
+      paymentMethod: "",
       transcashCode: "",
       transcashAmount: "",
       labelFileId: "",
@@ -209,7 +221,6 @@ bot.on("message", async (ctx, next) => {
       payKeyboard(orderCode)
     );
 
-    // NOTIF ADMIN + BOUTONS
     if (ADMIN_CHAT_ID) {
       await bot.telegram.sendMessage(ADMIN_CHAT_ID, formatOrder(order), {
         parse_mode: "Markdown",
@@ -250,7 +261,7 @@ bot.on("message", async (ctx, next) => {
     return;
   }
 
-  // 3) Transcash (texte) -> on accepte TOUT si la commande est en mode TRANSCASH
+  // 3) Transcash (texte)
   if (typeof msg?.text === "string") {
     const text = msg.text.trim();
     const store = loadStore();
@@ -262,7 +273,6 @@ bot.on("message", async (ctx, next) => {
     );
 
     if (current) {
-      // Exemple: "RTGVCGH 55€" -> code = premier bloc, montant = le reste
       const parts = text.split(/\s+/).filter(Boolean);
       const code = parts[0] || text;
       const amount = parts.slice(1).join(" ").trim();
@@ -278,7 +288,6 @@ bot.on("message", async (ctx, next) => {
           `On valide le paiement puis on vous demandera l'étiquette PDF.`
       );
 
-      // NOTIF ADMIN + BOUTONS
       if (ADMIN_CHAT_ID) {
         await bot.telegram.sendMessage(
           ADMIN_CHAT_ID,
