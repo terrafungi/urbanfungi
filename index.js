@@ -1,8 +1,9 @@
 /**
- * UrbanFungi Bot — Telegraf + Webhook + Express (Render friendly)
+ * UrbanFungi Bot — Telegraf + Webhook + Express (Render)
+ * - MiniApp -> ORDER via WebApp sendData()
  * - Paiement BTC / Transcash
- * - Validation admin -> demande PDF
- * - Réception PDF (document) -> forward admin
+ * - Admin valide -> demande PDF
+ * - PDF reçu -> forward admin
  */
 
 const fs = require("fs");
@@ -23,52 +24,48 @@ const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || "0"); // TON user id p
 const BTC_ADDRESS = (process.env.BTC_ADDRESS || "").trim();
 const TRANSCASH_TEXT =
   (process.env.TRANSCASH_TEXT || "").trim() ||
-  "Envoyez votre code Transcash (copier/coller) + montant exact dans ce chat.";
+  "Envoyez votre code Transcash + le montant exact.";
 
-// IMPORTANT : base webhook = URL DU SERVICE BOT (celle affichée dans Render)
 const WEBHOOK_BASE_URL = (process.env.WEBHOOK_BASE_URL || "").trim();
 const WEBHOOK_SECRET = (process.env.WEBHOOK_SECRET || "").trim();
-
-if (!WEBHOOK_BASE_URL) {
-  throw new Error('❌ WEBHOOK_BASE_URL manquant (ex: "https://urbanfungi-tp50.onrender.com")');
-}
-if (!WEBHOOK_SECRET) {
-  throw new Error('❌ WEBHOOK_SECRET manquant (ex: "uf_x9Kp2dLx7")');
-}
+if (!WEBHOOK_BASE_URL) throw new Error('❌ WEBHOOK_BASE_URL manquant (ex: "https://urbanfungi-tp50.onrender.com")');
+if (!WEBHOOK_SECRET) throw new Error('❌ WEBHOOK_SECRET manquant (ex: "azertyuiop123")');
 
 const PORT = Number(process.env.PORT || "10000");
 const HOOK_PATH = `/telegraf/${WEBHOOK_SECRET}`;
 const HOOK_URL = `${WEBHOOK_BASE_URL.replace(/\/+$/, "")}${HOOK_PATH}`;
+
+// ================== BOT ==================
+const bot = new Telegraf(BOT_TOKEN);
+
+// ===== Logs (TRÈS UTILE) =====
+bot.use(async (ctx, next) => {
+  try {
+    const u = ctx.from?.id;
+    const t = ctx.updateType;
+    const msg = ctx.message?.text;
+    const hasWebAppData = !!ctx.message?.web_app_data?.data;
+    const hasDoc = !!ctx.message?.document;
+    console.log(
+      `TG UPDATE: type=${t} from=${u} text=${msg ? JSON.stringify(msg) : "-"} webApp=${hasWebAppData} doc=${hasDoc}`
+    );
+  } catch {}
+  return next();
+});
 
 // ================== STORE (fichier simple) ==================
 const STORE_FILE = process.env.ORDERS_STORE || path.join(process.cwd(), "orders.json");
 
 function loadStore() {
   try {
-    if (!fs.existsSync(STORE_FILE)) return { orders: {}, users: {} };
-    const parsed = JSON.parse(fs.readFileSync(STORE_FILE, "utf8"));
-    return {
-      orders: parsed.orders || {},
-      users: parsed.users || {},
-    };
+    if (!fs.existsSync(STORE_FILE)) return { orders: {} };
+    return JSON.parse(fs.readFileSync(STORE_FILE, "utf8"));
   } catch {
-    return { orders: {}, users: {} };
+    return { orders: {} };
   }
 }
 function saveStore(store) {
   fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), "utf8");
-}
-
-function setExpectedOrder(store, userId, orderCode) {
-  store.users = store.users || {};
-  store.users[String(userId)] = {
-    ...(store.users[String(userId)] || {}),
-    expectedOrderCode: orderCode || "",
-    updatedAt: Date.now(),
-  };
-}
-function getExpectedOrderCode(store, userId) {
-  return store.users?.[String(userId)]?.expectedOrderCode || "";
 }
 
 function newOrderCode() {
@@ -79,15 +76,16 @@ function newOrderCode() {
   const rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `UF-${y}${m}${day}-${rnd}`;
 }
-
 function euro(n) {
   return Number(n || 0).toFixed(2);
 }
 
-// ================== AUTH ==================
+// ================== Admin check ==================
 function isAdmin(ctx) {
+  // si ADMIN_USER_ID est défini => seuls tes clics admin sont acceptés
   if (ADMIN_USER_ID) return ctx.from?.id === ADMIN_USER_ID;
-  return false;
+  // fallback si tu n'as pas mis ADMIN_USER_ID (pas recommandé)
+  return true;
 }
 
 // ================== Keyboards ==================
@@ -96,20 +94,18 @@ function userKeyboard() {
     .resize()
     .persistent();
 }
-
 function userInlineShop() {
   return Markup.inlineKeyboard([[Markup.button.webApp("🛒 Ouvrir la boutique", WEBAPP_URL)]]);
 }
-
 function payKeyboard(orderCode) {
   return Markup.inlineKeyboard([
     [
       Markup.button.callback("₿ Payer en BTC", `PAY_BTC:${orderCode}`),
       Markup.button.callback("💳 Transcash", `PAY_TC:${orderCode}`),
     ],
+    [Markup.button.callback("📄 Envoyer étiquette PDF", `SEND_PDF:${orderCode}`)],
   ]);
 }
-
 function adminKeyboard(orderCode) {
   return Markup.inlineKeyboard([
     [
@@ -125,6 +121,7 @@ function formatOrder(order) {
   lines.push(`🧾 *Commande ${order.orderCode}*`);
   lines.push(`👤 Client: ${order.username ? "@" + order.username : order.userId}`);
   lines.push(`💶 Total: *${euro(order.totalEur)} €*`);
+  lines.push(`💳 Paiement: *${order.paymentMethod || "?"}*`);
   lines.push("");
   lines.push("📦 Articles :");
   for (const it of order.items || []) {
@@ -141,43 +138,19 @@ function formatOrder(order) {
   return lines.join("\n");
 }
 
-// ================== BOT ==================
-const bot = new Telegraf(BOT_TOKEN);
-
-// LOGS Telegram (hyper utile)
-bot.use(async (ctx, next) => {
-  try {
-    const msg = ctx.message;
-    const brief = {
-      updateType: ctx.updateType,
-      from: ctx.from?.id,
-      chat: ctx.chat?.id,
-      hasWebAppData: !!msg?.web_app_data?.data,
-      hasDocument: !!msg?.document,
-      text: msg?.text || "",
-      docMime: msg?.document?.mime_type || "",
-      docName: msg?.document?.file_name || "",
-    };
-    if (brief.text === "/ping") console.log(`PING from ${brief.from}`);
-    else if (brief.text === "/start") console.log(`START from ${brief.from}`);
-    else if (brief.text) console.log(`TEXT from ${brief.from}: ${brief.text}`);
-    else if (brief.hasWebAppData) console.log(`WEBAPP_DATA from ${brief.from}`);
-    else if (brief.hasDocument) console.log(`DOC from ${brief.from}: ${brief.docName} (${brief.docMime})`);
-    else console.log("TG UPDATE:", JSON.stringify(brief));
-  } catch {}
-  return next();
-});
-
+// ================== Commands ==================
 bot.command("id", async (ctx) => {
   await ctx.reply(`user_id=${ctx.from.id}\nchat_id=${ctx.chat.id}`);
 });
 
-// /start & /shop
+bot.command("ping", async (ctx) => {
+  console.log("PING from", ctx.from.id);
+  await ctx.reply("✅ Bot OK");
+});
+
 bot.start(async (ctx) => {
-  await ctx.reply(
-    "🍄 UrbanFungi\n\nCliquez sur le bouton ci-dessous pour ouvrir la boutique.",
-    userKeyboard()
-  );
+  console.log("START from", ctx.from.id);
+  await ctx.reply("🍄 UrbanFungi\n\nCliquez ci-dessous :", userKeyboard());
   await ctx.reply("Si le bouton disparaît : /shop", userInlineShop());
 });
 
@@ -185,12 +158,7 @@ bot.command("shop", async (ctx) => {
   await ctx.reply("🛒 Ouvrir la boutique :", userKeyboard());
 });
 
-// ping debug
-bot.command("ping", async (ctx) => {
-  await ctx.reply("✅ Bot OK");
-});
-
-// ================== RÉCEPTION MESSAGES (commande / pdf / transcash) ==================
+// ================== Incoming messages ==================
 bot.on("message", async (ctx, next) => {
   const msg = ctx.message;
 
@@ -206,7 +174,6 @@ bot.on("message", async (ctx, next) => {
 
     const items = Array.isArray(payload?.items) ? payload.items : [];
     const totalEur = Number(payload?.totalEur || 0);
-
     if (!items.length) {
       await ctx.reply("❌ Commande vide.");
       return;
@@ -227,116 +194,103 @@ bot.on("message", async (ctx, next) => {
       })),
       totalEur,
       status: "AWAITING_PAYMENT",
+      paymentMethod: "",       // <--- IMPORTANT
       transcashCode: "",
+      transcashAmount: "",
       labelFileId: "",
       createdAt: Date.now(),
     };
 
     store.orders[orderCode] = order;
-    // (sécurité) on efface l'attente PDF précédente, si existait
-    setExpectedOrder(store, ctx.from.id, "");
     saveStore(store);
 
     await ctx.replyWithMarkdown(
-      `✅ *Commande reçue : ${orderCode}*\n\n` +
-        `💶 Total: *${euro(totalEur)} €*\n\n` +
-        `Choisissez votre moyen de paiement 👇`,
+      `✅ *Commande reçue : ${orderCode}*\nTotal: *${euro(totalEur)} €*\n\nChoisissez votre moyen de paiement 👇`,
       payKeyboard(orderCode)
     );
 
+    // NOTIF ADMIN + BOUTONS
     if (ADMIN_CHAT_ID) {
       await bot.telegram.sendMessage(ADMIN_CHAT_ID, formatOrder(order), {
         parse_mode: "Markdown",
-        ...adminKeyboard(orderCode),
+        reply_markup: adminKeyboard(orderCode).reply_markup,
       });
+      console.log("ADMIN NOTIF sent to", ADMIN_CHAT_ID, "order", orderCode);
+    } else {
+      console.log("ADMIN_CHAT_ID=0 => pas de notif admin");
     }
     return;
   }
 
-  // 2) PDF reçu (robuste)
-  const isPdf =
-    msg?.document &&
-    (msg.document.mime_type === "application/pdf" ||
-      (msg.document.file_name || "").toLowerCase().endsWith(".pdf"));
-
-  if (isPdf) {
+  // 2) PDF reçu
+  if (msg?.document?.mime_type === "application/pdf") {
     const store = loadStore();
+    const orders = Object.values(store.orders || {}).filter((o) => o.userId === ctx.from.id);
+    orders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const current = orders.find((o) => o.status === "AWAITING_LABEL");
 
-    // 2a) priorité : expectedOrderCode (défini quand tu valides le paiement)
-    let targetOrder = null;
-    const expected = getExpectedOrderCode(store, ctx.from.id);
-    if (expected && store.orders?.[expected]) {
-      targetOrder = store.orders[expected];
-    }
-
-    // 2b) fallback : cherche une commande en AWAITING_LABEL
-    if (!targetOrder) {
-      const orders = Object.values(store.orders || {}).filter((o) => Number(o.userId) === Number(ctx.from.id));
-      orders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      targetOrder = orders.find((o) => o.status === "AWAITING_LABEL") || null;
-    }
-
-    if (!targetOrder) {
+    if (!current) {
       await ctx.reply("Je n’attends pas encore le PDF (attendez la validation du paiement).");
       return;
     }
 
-    if (targetOrder.status !== "AWAITING_LABEL") {
-      // on force en état attendu si jamais ça a glissé
-      targetOrder.status = "AWAITING_LABEL";
-    }
-
-    targetOrder.labelFileId = msg.document.file_id;
-    targetOrder.status = "DONE";
-
-    store.orders[targetOrder.orderCode] = targetOrder;
-    // on efface l'attente PDF
-    setExpectedOrder(store, ctx.from.id, "");
+    current.labelFileId = msg.document.file_id;
+    current.status = "DONE";
+    store.orders[current.orderCode] = current;
     saveStore(store);
 
     await ctx.reply("✅ PDF reçu ! Merci, on traite la commande.");
 
     if (ADMIN_CHAT_ID) {
-      await bot.telegram.sendMessage(
-        ADMIN_CHAT_ID,
-        `📄 PDF reçu pour *${targetOrder.orderCode}* ✅`,
-        { parse_mode: "Markdown" }
-      );
+      await bot.telegram.sendMessage(ADMIN_CHAT_ID, `📄 PDF reçu pour *${current.orderCode}* ✅`, {
+        parse_mode: "Markdown",
+      });
       await bot.telegram.forwardMessage(ADMIN_CHAT_ID, ctx.chat.id, msg.message_id);
     }
     return;
   }
 
-  // 3) Transcash (texte)
+  // 3) Transcash (texte) -> on accepte TOUT si la commande est en mode TRANSCASH
   if (typeof msg?.text === "string") {
     const text = msg.text.trim();
-    const looksLikeCode = text.length >= 6 && text.length <= 60 && /[A-Za-z0-9]/.test(text);
+    const store = loadStore();
+    const orders = Object.values(store.orders || {}).filter((o) => o.userId === ctx.from.id);
+    orders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
-    if (looksLikeCode) {
-      const store = loadStore();
-      const orders = Object.values(store.orders || {}).filter((o) => Number(o.userId) === Number(ctx.from.id));
-      orders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      const current = orders.find((o) => o.status === "AWAITING_PAYMENT");
+    const current = orders.find(
+      (o) => o.status === "AWAITING_PAYMENT" && o.paymentMethod === "TRANSCASH"
+    );
 
-      if (current) {
-        current.transcashCode = text;
-        store.orders[current.orderCode] = current;
-        saveStore(store);
+    if (current) {
+      // Exemple: "RTGVCGH 55€" -> code = premier bloc, montant = le reste
+      const parts = text.split(/\s+/).filter(Boolean);
+      const code = parts[0] || text;
+      const amount = parts.slice(1).join(" ").trim();
 
-        await ctx.reply(
-          `✅ Code Transcash reçu pour ${current.orderCode}.\n` +
-            `On valide et on vous demandera le PDF.`
+      current.transcashCode = code;
+      current.transcashAmount = amount;
+      store.orders[current.orderCode] = current;
+      saveStore(store);
+
+      await ctx.reply(
+        `✅ Transcash reçu pour ${current.orderCode}.\n` +
+          `Code: ${code}${amount ? `\nMontant: ${amount}` : ""}\n\n` +
+          `On valide le paiement puis on vous demandera l'étiquette PDF.`
+      );
+
+      // NOTIF ADMIN + BOUTONS
+      if (ADMIN_CHAT_ID) {
+        await bot.telegram.sendMessage(
+          ADMIN_CHAT_ID,
+          `💳 Transcash reçu ✅\nCommande: *${current.orderCode}*\nCode: \`${code}\`${amount ? `\nMontant: *${amount}*` : ""}`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: adminKeyboard(current.orderCode).reply_markup,
+          }
         );
-
-        if (ADMIN_CHAT_ID) {
-          await bot.telegram.sendMessage(
-            ADMIN_CHAT_ID,
-            `💳 Transcash reçu ✅\nCommande: *${current.orderCode}*\nCode: \`${text}\``,
-            { parse_mode: "Markdown", ...adminKeyboard(current.orderCode) }
-          );
-        }
-        return;
+        console.log("ADMIN transcash notif sent for", current.orderCode);
       }
+      return;
     }
   }
 
@@ -348,16 +302,21 @@ bot.action(/^PAY_BTC:(.+)$/, async (ctx) => {
   const orderCode = ctx.match[1];
   await ctx.answerCbQuery("BTC");
 
+  const store = loadStore();
+  const order = store.orders?.[orderCode];
+  if (order) {
+    order.paymentMethod = "BTC";
+    store.orders[orderCode] = order;
+    saveStore(store);
+  }
+
   if (!BTC_ADDRESS) {
     await ctx.reply("❌ Adresse BTC non configurée (admin).");
     return;
   }
 
   await ctx.replyWithMarkdown(
-    `₿ *Bitcoin — ${orderCode}*\n\n` +
-      `Adresse: \`${BTC_ADDRESS}\`\n\n` +
-      `Après paiement, envoyez une preuve ici.\n` +
-      `Ensuite on vous demandera l'étiquette PDF.`
+    `₿ *Bitcoin — ${orderCode}*\n\nAdresse: \`${BTC_ADDRESS}\`\n\nAprès paiement, envoyez une preuve ici.\nEnsuite on vous demandera l'étiquette PDF.`
   );
 });
 
@@ -365,11 +324,23 @@ bot.action(/^PAY_TC:(.+)$/, async (ctx) => {
   const orderCode = ctx.match[1];
   await ctx.answerCbQuery("Transcash");
 
+  const store = loadStore();
+  const order = store.orders?.[orderCode];
+  if (order) {
+    order.paymentMethod = "TRANSCASH";
+    store.orders[orderCode] = order;
+    saveStore(store);
+  }
+
   await ctx.replyWithMarkdown(
-    `💳 *Transcash — ${orderCode}*\n\n` +
-      `${TRANSCASH_TEXT}\n\n` +
-      `Envoyez maintenant votre *code Transcash* dans le chat.`
+    `💳 *Transcash — ${orderCode}*\n\n${TRANSCASH_TEXT}\n\nEnvoyez maintenant votre *code Transcash* (vous pouvez mettre aussi le montant).`
   );
+});
+
+bot.action(/^SEND_PDF:(.+)$/, async (ctx) => {
+  const orderCode = ctx.match[1];
+  await ctx.answerCbQuery("OK");
+  await ctx.replyWithMarkdown(`📄 Envoyez maintenant votre *étiquette PDF* pour la commande *${orderCode}*.`);
 });
 
 // ================== ACTIONS ADMIN ==================
@@ -384,15 +355,10 @@ bot.action(/^ADM_PAID:(.+)$/, async (ctx) => {
 
   order.status = "AWAITING_LABEL";
   store.orders[orderCode] = order;
-
-  // ✅ clé du fix : on mémorise quel PDF on attend pour cet utilisateur
-  setExpectedOrder(store, order.userId, orderCode);
-
   saveStore(store);
 
   await ctx.answerCbQuery("Validé ✅");
 
-  // Message client
   await bot.telegram.sendMessage(
     order.userId,
     `✅ Paiement validé pour *${orderCode}*.\n\n📄 Envoyez maintenant votre *étiquette PDF* ici (document).`,
@@ -410,9 +376,6 @@ bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
 
   order.status = "CANCELED";
   store.orders[orderCode] = order;
-  // si on attendait ce PDF, on clear
-  const expected = getExpectedOrderCode(store, order.userId);
-  if (expected === orderCode) setExpectedOrder(store, order.userId, "");
   saveStore(store);
 
   await ctx.answerCbQuery("Annulé");
@@ -423,7 +386,7 @@ bot.action(/^ADM_CANCEL:(.+)$/, async (ctx) => {
   try {
     await ctx.editMessageText(formatOrder(order), {
       parse_mode: "Markdown",
-      ...adminKeyboard(orderCode),
+      reply_markup: adminKeyboard(orderCode).reply_markup,
     });
   } catch {}
 });
@@ -438,8 +401,6 @@ bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
 
   order.status = "DONE";
   store.orders[orderCode] = order;
-  const expected = getExpectedOrderCode(store, order.userId);
-  if (expected === orderCode) setExpectedOrder(store, order.userId, "");
   saveStore(store);
 
   await ctx.answerCbQuery("OK");
@@ -450,7 +411,7 @@ bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
   try {
     await ctx.editMessageText(formatOrder(order), {
       parse_mode: "Markdown",
-      ...adminKeyboard(orderCode),
+      reply_markup: adminKeyboard(orderCode).reply_markup,
     });
   } catch {}
 });
@@ -458,24 +419,15 @@ bot.action(/^ADM_DONE:(.+)$/, async (ctx) => {
 // ================== EXPRESS WEBHOOK SERVER ==================
 const app = express();
 
-// logs HTTP Render
-app.use((req, _res, next) => {
-  console.log(`HTTP IN: ${req.method} ${req.path}`);
-  next();
-});
-
-// Health OK (Render)
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 
-// Webhook Telegraf
 app.use(bot.webhookCallback(HOOK_PATH));
 
 async function start() {
   await bot.telegram.setWebhook(HOOK_URL);
   console.log("Webhook set →", HOOK_URL);
-  console.log("STORE_FILE →", STORE_FILE);
-  console.log("ADMIN_CHAT_ID:", ADMIN_CHAT_ID, "ADMIN_USER_ID:", ADMIN_USER_ID);
+  console.log("ADMIN_CHAT_ID =", ADMIN_CHAT_ID, "ADMIN_USER_ID =", ADMIN_USER_ID);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log("HTTP listening on", PORT);
